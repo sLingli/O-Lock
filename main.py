@@ -24,10 +24,7 @@ from PIL import Image, ImageDraw
 import pystray
 
 # Windows SDK 用于枚举已配对蓝牙设备
-from winsdk.windows.devices.enumeration import (
-    DeviceInformation,
-    DeviceInformationKind,
-)
+from winrt.windows.devices.enumeration import DeviceInformation, DeviceInformationKind
 
 # ==================== 配置参数 ====================
 CHECK_INTERVAL = 3.0        # 监控循环间隔 (秒)
