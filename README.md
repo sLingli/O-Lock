@@ -115,3 +115,11 @@ When using **OPPO Connect (PC Connect)**, the native Windows "Dynamic Lock" ofte
 **Github Copilot**
 
 ---
+
+## ⚠️ Disclaimer / 免责声明
+
+This project is an independent open-source software and is **not** affiliated with, endorsed by, or connected to **OPPO**, **OnePlus**, or **Realme**.
+"OPPO", "PC Connect", "HeyTap" are trademarks of OPPO Electronics Corp.
+
+本项目是一款独立的第三方开源工具，与 **OPPO**、**OnePlus** (一加) 或 **Realme** (真我) 无任何官方关联。
+文中所提及的 "OPPO"、"PC Connect" (跨屏互联) 等品牌名称仅用于说明兼容性，其商标所有权归原公司所有。
