@@ -17,7 +17,8 @@ import pystray
 from PIL import Image, ImageDraw
 
 # ================== 配置项 ==================
-PROCESS_NAME = "pantaChannelService.exe"  # 要监控的进程名
+PROCESS_NAME = "pantaChannelService.exe"  # 监听网络连接的进程（负责通信）
+APP_PROCESS_NAME = "O+Connect.exe"  # 主程序进程（检测是否运行）
 CHECK_INTERVAL = 3  # 检测间隔（秒）
 OFFLINE_THRESHOLD = 3  # 连续多少次离线才锁屏
 WARMUP_TIME = 60  # 启动/解锁后等待手机连接的最大时间（秒），范围 30-600，超时未连接则锁屏
@@ -28,7 +29,8 @@ offline_count = 0  # 连续离线计数
 is_online = False  # 当前在线状态
 running = True  # 程序运行标志
 icon = None  # 托盘图标对象
-is_warmup = True  # 是否处于缓冲期
+is_warmup = False  # 是否处于缓冲期（初始为 False，等待主程序启动后再激活）
+is_waiting_for_app = True  # 是否处于等待主程序启动状态（初始为 True）
 warmup_remaining = 0  # 缓冲期剩余时间（秒）
 was_locked = False  # 上一次检测时屏幕是否锁定
 
@@ -97,7 +99,11 @@ def is_screen_locked():
 def create_icon_image(state):
     """
     创建托盘图标图像
-    state: 'online' = 绿色, 'offline' = 红色, 'warmup' = 黄色
+    state: 
+      'online' = 绿色
+      'offline' = 红色
+      'warmup' = 黄色 
+      'waiting' = 灰色
     """
     # 创建 64x64 的图像
     size = 64
@@ -106,11 +112,13 @@ def create_icon_image(state):
     
     # 根据状态选择颜色
     if state == 'online':
-        color = (0, 200, 0, 255)  # 绿色
+        color = (0, 200, 0, 255)    # 绿色
     elif state == 'warmup':
         color = (255, 200, 0, 255)  # 黄色
+    elif state == 'waiting':
+        color = (128, 128, 128, 255) # 灰色
     else:
-        color = (200, 0, 0, 255)  # 红色
+        color = (200, 0, 0, 255)    # 红色
     
     # 画一个填充的圆
     margin = 4
@@ -121,9 +129,10 @@ def create_icon_image(state):
 
 def get_status_text():
     """获取托盘图标的悬停提示文本"""
-    global is_online, offline_count, is_warmup, warmup_remaining
-    if is_warmup:
-        return f"BleLock: 🟡 等待连接 ({warmup_remaining}秒)"
+    if is_waiting_for_app:
+        return f"BleLock: ⚪ 等待 {APP_PROCESS_NAME}"
+    elif is_warmup:
+        return f"BleLock: 🟡 正在连接... ({warmup_remaining}秒)"
     elif is_online:
         return "BleLock: 🟢 手机在线"
     else:
@@ -132,8 +141,9 @@ def get_status_text():
 
 def get_icon_state():
     """获取当前图标状态"""
-    global is_warmup, is_online
-    if is_warmup:
+    if is_waiting_for_app:
+        return 'waiting'
+    elif is_warmup:
         return 'warmup'
     elif is_online:
         return 'online'
@@ -149,96 +159,159 @@ def update_icon():
         icon.title = get_status_text()
 
 
+def is_app_running():
+    """检测 O+Connect.exe 是否在运行"""
+    for proc in psutil.process_iter(['name']):
+        if proc.info['name'] and proc.info['name'].lower() == APP_PROCESS_NAME.lower():
+            return True
+    return False
+
+
+def start_waiting_for_app():
+    """进入等待主程序启动状态"""
+    global is_waiting_for_app, is_warmup, is_online, offline_count
+    is_waiting_for_app = True
+    is_warmup = False
+    is_online = False
+    offline_count = 0
+    print(f"等待 {APP_PROCESS_NAME} 启动...")
+
+
 def start_warmup():
     """开始缓冲期"""
-    global is_warmup, warmup_remaining, offline_count, is_online
+    global is_warmup, is_waiting_for_app, warmup_remaining, offline_count, is_online
     # 确保配置在有效范围内
     warmup_time = max(30, min(600, WARMUP_TIME))
     is_warmup = True
+    is_waiting_for_app = False  # 结束等待程序状态
     warmup_remaining = warmup_time
     offline_count = 0
     is_online = False  # 缓冲期开始时默认未连接
-    print(f"进入缓冲期，{warmup_time} 秒内需检测到手机")
+    print(f"检测到主程序已启动，进入缓冲期，{warmup_time} 秒内需检测到手机")
 
 
 def monitor_loop():
     """
     主监控循环
-    每隔 CHECK_INTERVAL 秒检测一次
-    连续 OFFLINE_THRESHOLD 次检测不到才锁屏
+    逻辑：
+    1. 启动/解锁时 -> 进入【等待程序启动】状态（灰色）
+    2. 检测到程序启动 -> 进入【缓冲期】（黄色）
+    3. 缓冲期内检测到手机 -> 进入【在线】状态（绿色）
+    4. 缓冲期超时未检测到 -> 进入【离线】状态（红色并锁屏）
+    5. 在线状态 -> 正常心跳检测
     """
-    global offline_count, is_online, running, is_warmup, warmup_remaining, was_locked
+    global offline_count, is_online, running, is_warmup, is_waiting_for_app, warmup_remaining, was_locked
     
-    # 程序启动时进入缓冲期
-    start_warmup()
+    # 程序初始进入等待状态
+    start_waiting_for_app()
     
     while running:
-        # 检测屏幕锁定状态变化（解锁后进入缓冲期）
+        # 检测屏幕锁定状态变化
         currently_locked = is_screen_locked()
+        
+        # 状态变迁：从锁定 -> 解锁
         if was_locked and not currently_locked:
-            # 从锁定变为解锁，开始缓冲期
-            print("检测到屏幕解锁")
-            start_warmup()
+            print("屏幕解锁，重新等待主程序就绪...")
+            start_waiting_for_app()
+        
         was_locked = currently_locked
         
-        # 如果屏幕锁定，跳过检测
+        # 屏幕锁定期间暂停工作，只简单休眠
         if currently_locked:
             time.sleep(1)
             continue
-        
-        # 检测手机连接状态
-        connected = check_phone_connection()
-        
-        # 处理缓冲期
+
+        # --- 阶段 1: 等待主程序启动 (灰色) ---
+        if is_waiting_for_app:
+            if is_app_running():
+                print(f"检测到 {APP_PROCESS_NAME} 已运行，开始连接缓冲...")
+                start_warmup()  # 进入黄色缓冲期
+            else:
+                # 主程序未启动，保持灰色，不锁屏
+                update_icon()
+                time.sleep(1)
+                continue
+
         if is_warmup:
-            warmup_remaining -= CHECK_INTERVAL
+            # 实时检测主程序是否还在
+            if not is_app_running():
+                print(f"{APP_PROCESS_NAME} 已退出，返回等待状态")
+                start_waiting_for_app()
+                continue
+            
+            # 检测手机连接
+            connected = check_phone_connection()
             
             if connected:
-                # 缓冲期内检测到连接，立即结束缓冲期，变绿色
+                # 成功连接，且之前是缓冲期：变绿，结束缓冲
+                print("缓冲期内检测到手机，连接成功！")
                 is_warmup = False
                 warmup_remaining = 0
                 offline_count = 0
+                # 这里不需要显式设置 is_online = True，因为缓冲结束会自然流转到下面的正常监控逻辑，
+                # 但为了立即更新图标状态，我们还是设置一下
                 is_online = True
-                print("缓冲期内检测到手机，提前结束缓冲期")
-            elif warmup_remaining <= 0:
-                # 缓冲期结束仍未检测到，立即变红色并锁屏
-                is_warmup = False
-                warmup_remaining = 0
-                is_online = False
-                print("缓冲期结束，未检测到手机，锁定屏幕！")
-                lock_screen()
-            
-            # 更新图标并等待下次检测
-            update_icon()
-            for _ in range(CHECK_INTERVAL * 10):
-                if not running:
-                    break
-                time.sleep(0.1)
-            continue
+            else:
+                # 未连接：倒计时
+                warmup_remaining -= 1 # 每次循环大约1秒
+                
+                # 更新倒计时显示
+                update_icon()
+                
+                if warmup_remaining <= 0:
+                    # 超时未连接：锁屏
+                    print("缓冲期结束，未检测到手机，执行锁屏！")
+                    lock_screen()
+                    # 锁屏指令发出后，立即进入下一次循环
+                    # 此时 was_locked 会变为 True，循环将暂停检测
+                    # 当用户再次解锁时，was_locked 变为 False，触发 start_waiting_for_app
+                    # 从而完美闭环回到灰色等待状态
+                    time.sleep(1) 
+                    continue
+                else:
+                    # 还在缓冲期内，继续等待
+                    time.sleep(1)
+                    continue
         
-        # 正常检测逻辑（非缓冲期）
-        if connected:
-            # 检测到连接，重置计数
-            offline_count = 0
-            is_online = True
+        # --- 阶段 3: 正常监控 (绿色/红色) ---
+        
+        # 如果主程序意外退出，视为断连，变回等待状态？
+        # 用户需求里没细说，但"检测O+Connect.exe"似乎是全局前提
+        # 这里为了安全：主程序若退出，视为离线，触发锁屏，锁屏后自然会因屏幕解锁而重置为等待状态
+        
+        app_running = is_app_running()
+        if not app_running:
+            print(f"{APP_PROCESS_NAME} 意外退出！")
+            connected = False
         else:
-            # 未检测到连接
-            offline_count += 1
+            connected = check_phone_connection()
+        
+        if connected:
+            # 连接正常
+            if not is_online:
+                print("手机重连成功")
+                is_online = True
+            offline_count = 0
+        else:
+            # 连接断开
+            if is_online:
+                print("手机连接断开")
             is_online = False
+            offline_count += 1
+            print(f"检测不到手机 ({offline_count}/{OFFLINE_THRESHOLD})")
             
             if offline_count >= OFFLINE_THRESHOLD:
-                print("手机离线，锁定屏幕！")
+                print("确认手机离线，锁定屏幕！")
                 lock_screen()
-                # 锁屏后重置计数，避免重复锁屏
                 offline_count = 0
+                # 锁屏后程序继续运行，下一次循环发现屏幕被锁定，会暂停检测
+                # 当用户解锁后，会触发 "was_locked and not currently_locked"，从而进入 start_waiting_for_app
         
-        # 更新托盘图标
         update_icon()
         
         # 等待下次检测
         for _ in range(CHECK_INTERVAL * 10):
-            if not running:
-                break
+            if not running: break
             time.sleep(0.1)
 
 
