@@ -20,6 +20,7 @@ from PIL import Image, ImageDraw
 PROCESS_NAME = "pantaChannelService.exe"  # 要监控的进程名
 CHECK_INTERVAL = 3  # 检测间隔（秒）
 OFFLINE_THRESHOLD = 3  # 连续多少次离线才锁屏
+WARMUP_TIME = 60  # 启动/解锁后等待手机连接的最大时间（秒），范围 30-600，超时未连接则锁屏
 # ============================================
 
 # 全局变量
@@ -27,6 +28,9 @@ offline_count = 0  # 连续离线计数
 is_online = False  # 当前在线状态
 running = True  # 程序运行标志
 icon = None  # 托盘图标对象
+is_warmup = True  # 是否处于缓冲期
+warmup_remaining = 0  # 缓冲期剩余时间（秒）
+was_locked = False  # 上一次检测时屏幕是否锁定
 
 
 def is_private_ip(ip_str):
@@ -76,11 +80,24 @@ def lock_screen():
     ctypes.windll.user32.LockWorkStation()
 
 
-def create_icon_image(online):
+def is_screen_locked():
+    """
+    检测屏幕是否处于锁定状态
+    通过尝试打开输入桌面来判断
+    """
+    user32 = ctypes.windll.user32
+    # 尝试打开输入桌面
+    hDesktop = user32.OpenInputDesktop(0, False, 0x0001)  # DESKTOP_READOBJECTS
+    if hDesktop:
+        user32.CloseDesktop(hDesktop)
+        return False  # 能打开说明未锁定
+    return True  # 无法打开说明已锁定
+
+
+def create_icon_image(state):
     """
     创建托盘图标图像
-    在线 = 绿色圆点
-    离线 = 红色圆点
+    state: 'online' = 绿色, 'offline' = 红色, 'warmup' = 黄色
     """
     # 创建 64x64 的图像
     size = 64
@@ -88,7 +105,12 @@ def create_icon_image(online):
     draw = ImageDraw.Draw(image)
     
     # 根据状态选择颜色
-    color = (0, 200, 0, 255) if online else (200, 0, 0, 255)
+    if state == 'online':
+        color = (0, 200, 0, 255)  # 绿色
+    elif state == 'warmup':
+        color = (255, 200, 0, 255)  # 黄色
+    else:
+        color = (200, 0, 0, 255)  # 红色
     
     # 画一个填充的圆
     margin = 4
@@ -99,19 +121,44 @@ def create_icon_image(online):
 
 def get_status_text():
     """获取托盘图标的悬停提示文本"""
-    global is_online, offline_count
-    if is_online:
+    global is_online, offline_count, is_warmup, warmup_remaining
+    if is_warmup:
+        return f"BleLock: 🟡 等待连接 ({warmup_remaining}秒)"
+    elif is_online:
         return "BleLock: 🟢 手机在线"
     else:
         return f"BleLock: 🔴 未检测到 ({offline_count}/{OFFLINE_THRESHOLD})"
 
 
+def get_icon_state():
+    """获取当前图标状态"""
+    global is_warmup, is_online
+    if is_warmup:
+        return 'warmup'
+    elif is_online:
+        return 'online'
+    else:
+        return 'offline'
+
+
 def update_icon():
     """更新托盘图标和提示文本"""
-    global icon, is_online
+    global icon
     if icon:
-        icon.icon = create_icon_image(is_online)
+        icon.icon = create_icon_image(get_icon_state())
         icon.title = get_status_text()
+
+
+def start_warmup():
+    """开始缓冲期"""
+    global is_warmup, warmup_remaining, offline_count, is_online
+    # 确保配置在有效范围内
+    warmup_time = max(30, min(600, WARMUP_TIME))
+    is_warmup = True
+    warmup_remaining = warmup_time
+    offline_count = 0
+    is_online = False  # 缓冲期开始时默认未连接
+    print(f"进入缓冲期，{warmup_time} 秒内需检测到手机")
 
 
 def monitor_loop():
@@ -120,11 +167,56 @@ def monitor_loop():
     每隔 CHECK_INTERVAL 秒检测一次
     连续 OFFLINE_THRESHOLD 次检测不到才锁屏
     """
-    global offline_count, is_online, running
+    global offline_count, is_online, running, is_warmup, warmup_remaining, was_locked
+    
+    # 程序启动时进入缓冲期
+    start_warmup()
     
     while running:
+        # 检测屏幕锁定状态变化（解锁后进入缓冲期）
+        currently_locked = is_screen_locked()
+        if was_locked and not currently_locked:
+            # 从锁定变为解锁，开始缓冲期
+            print("检测到屏幕解锁")
+            start_warmup()
+        was_locked = currently_locked
+        
+        # 如果屏幕锁定，跳过检测
+        if currently_locked:
+            time.sleep(1)
+            continue
+        
+        # 检测手机连接状态
         connected = check_phone_connection()
         
+        # 处理缓冲期
+        if is_warmup:
+            warmup_remaining -= CHECK_INTERVAL
+            
+            if connected:
+                # 缓冲期内检测到连接，立即结束缓冲期，变绿色
+                is_warmup = False
+                warmup_remaining = 0
+                offline_count = 0
+                is_online = True
+                print("缓冲期内检测到手机，提前结束缓冲期")
+            elif warmup_remaining <= 0:
+                # 缓冲期结束仍未检测到，立即变红色并锁屏
+                is_warmup = False
+                warmup_remaining = 0
+                is_online = False
+                print("缓冲期结束，未检测到手机，锁定屏幕！")
+                lock_screen()
+            
+            # 更新图标并等待下次检测
+            update_icon()
+            for _ in range(CHECK_INTERVAL * 10):
+                if not running:
+                    break
+                time.sleep(0.1)
+            continue
+        
+        # 正常检测逻辑（非缓冲期）
         if connected:
             # 检测到连接，重置计数
             offline_count = 0
@@ -237,7 +329,7 @@ def setup_tray_icon():
     # 创建托盘图标
     icon = pystray.Icon(
         "BleLock",
-        create_icon_image(False),
+        create_icon_image('warmup'),
         "BleLock: 初始化中...",
         menu
     )
@@ -253,6 +345,7 @@ def main():
     print(f"监控进程: {PROCESS_NAME}")
     print(f"检测间隔: {CHECK_INTERVAL} 秒")
     print(f"离线阈值: 连续 {OFFLINE_THRESHOLD} 次")
+    print(f"等待时间: {max(30, min(600, WARMUP_TIME))} 秒（超时未连接将锁屏）")
     
     # 创建托盘图标
     icon = setup_tray_icon()
