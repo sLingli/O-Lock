@@ -198,21 +198,21 @@ def is_private_ip(ip_str):
 def check_phone_connection():
     """
     检测手机是否连接
-    遍历 pantaChannelService.exe 进程的所有网络连接
-    如果存在 ESTABLISHED 状态且远程 IP 是局域网，则判定手机在线
+    遍历所有 O+Connect.exe 进程的网络连接
+    如果存在 ESTABLISHED 状态且远程 IP 是 192.168.x.x，则判定手机在线
     """
     try:
         for proc in psutil.process_iter(['name', 'pid']):
-            if proc.info['name'] and proc.info['name'].lower() == PROCESS_NAME.lower():
+            if proc.info['name'] and proc.info['name'].lower() == APP_PROCESS_NAME.lower():
                 try:
-                    connections = proc.connections(kind='tcp')
+                    connections = proc.net_connections(kind='tcp')
                     for conn in connections:
                         # 检查是否是 ESTABLISHED 状态
                         if conn.status == psutil.CONN_ESTABLISHED:
-                            # 检查远程地址是否存在且是局域网 IP
+                            # 检查远程地址是否存在且是 192.168.x.x
                             if conn.raddr and len(conn.raddr) >= 1:
                                 remote_ip = conn.raddr[0]
-                                if is_private_ip(remote_ip):
+                                if remote_ip.startswith('192.168.'):
                                     return True
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     # 进程已退出或无权限访问
@@ -425,16 +425,16 @@ def monitor_loop():
         
         # --- 阶段 3: 正常监控 (绿色/红色) ---
         
-        # 如果主程序意外退出，视为断连，变回等待状态？
-        # 用户需求里没细说，但"检测O+Connect.exe"似乎是全局前提
-        # 这里为了安全：主程序若退出，视为离线，触发锁屏，锁屏后自然会因屏幕解锁而重置为等待状态
+        # 如果主程序退出，回到灰色等待状态（不锁屏）
+        # O+Connect.exe 只决定灰色/黄色，不影响锁屏逻辑
+        if not is_app_running():
+            print(tr("app_exited_back_waiting", app_process=APP_PROCESS_NAME))
+            start_waiting_for_app()
+            update_icon()
+            continue
         
-        app_running = is_app_running()
-        if not app_running:
-            print(tr("app_exited_unexpected", app_process=APP_PROCESS_NAME))
-            connected = False
-        else:
-            connected = check_phone_connection()
+        # 检测手机连接状态（只有这个才决定是否锁屏）
+        connected = check_phone_connection()
         
         if connected:
             # 连接正常
