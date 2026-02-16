@@ -36,7 +36,7 @@
 
 ### 🧠 核心原理与工作流程
 
-O-Lock 采用智能状态机机制，确保在各种场景下（开机、解锁、日常使用）都能准确判断，绝不误锁。
+O-Lock 采用智能状态机机制，确保在各种场景下都能准确判断，绝不误锁。
 
 #### 1. ⚪ 灰色状态：等待程序启动
 - **触发场景**：刚开机，或电脑刚解锁。
@@ -115,3 +115,11 @@ When using **OPPO Connect (PC Connect)**, the native Windows "Dynamic Lock" ofte
 **Github Copilot**
 
 ---
+
+## ⚠️ Disclaimer / 免责声明
+
+This project is an independent open-source software and is **not** affiliated with, endorsed by, or connected to **OPPO**, **OnePlus**, or **Realme**.
+"OPPO", "PC Connect", "HeyTap" are trademarks of OPPO Electronics Corp.
+
+本项目是一款独立的第三方开源工具，与 **OPPO**、**OnePlus** (一加) 或 **Realme** (真我) 无任何官方关联。
+文中所提及的 "OPPO"、"PC Connect" (跨屏互联) 等品牌名称仅用于说明兼容性，其商标所有权归原公司所有。
