@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-BleLock - 手机离线自动锁屏工具
+OLock - Phone offline auto-lock tool
+Detects OPPO Connect network activity to determine phone presence.
+
+OLock - 手机离线自动锁屏工具
 通过检测 OPPO 互联软件的网络连接状态，判断手机是否在线
 """
 
@@ -10,6 +13,7 @@ import time
 import ctypes
 import threading
 import ipaddress
+import locale
 from pathlib import Path
 
 import psutil
@@ -17,6 +21,7 @@ import pystray
 from PIL import Image, ImageDraw
 
 # ================== 配置项 ==================
+APP_NAME = "OLock"
 PROCESS_NAME = "pantaChannelService.exe"  # 监听网络连接的进程（负责通信）
 APP_PROCESS_NAME = "O+Connect.exe"  # 主程序进程（检测是否运行）
 CHECK_INTERVAL = 3  # 检测间隔（秒）
@@ -33,6 +38,146 @@ is_warmup = False  # 是否处于缓冲期（初始为 False，等待主程序�
 is_waiting_for_app = True  # 是否处于等待主程序启动状态（初始为 True）
 warmup_remaining = 0  # 缓冲期剩余时间（秒）
 was_locked = False  # 上一次检测时屏幕是否锁定
+
+
+def get_ui_language():
+    """Return 'en', 'zh-Hans', or 'zh-Hant' based on system UI language."""
+    hans_lang_ids = {0x0804, 0x1004}
+    hant_lang_ids = {0x0404, 0x0C04, 0x1404}
+
+    try:
+        lang_id = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+        if lang_id in hans_lang_ids:
+            return "zh-Hans"
+        if lang_id in hant_lang_ids:
+            return "zh-Hant"
+    except Exception:
+        pass
+
+    try:
+        lang = locale.getdefaultlocale()[0] or ""
+        lang_lower = lang.lower()
+        if lang_lower.startswith("zh"):
+            if any(tag in lang_lower for tag in ("tw", "hk", "mo", "hant")):
+                return "zh-Hant"
+            return "zh-Hans"
+    except Exception:
+        pass
+
+    return "en"
+
+
+TEXTS = {
+    "en": {
+        "check_error": "Error while checking: {error}",
+        "tray_waiting": "{app_name}: ⚪ Waiting for {app_process}",
+        "tray_warmup": "{app_name}: 🟡 Connecting... ({seconds}s)",
+        "tray_online": "{app_name}: 🟢 Phone online",
+        "tray_offline": "{app_name}: 🔴 Not detected ({count}/{threshold})",
+        "waiting_app_start": "Waiting for {app_process} to start...",
+        "screen_unlock": "Screen unlocked, waiting for app...",
+        "app_started_warmup": "Detected {app_process} running, starting warmup...",
+        "app_started_warmup_notice": (
+            "Detected main app started, entering warmup; "
+            "phone must connect within {seconds} seconds."
+        ),
+        "app_exited_back_waiting": "{app_process} exited, back to waiting.",
+        "warmup_connected": "Phone detected during warmup, connected.",
+        "warmup_timeout_lock": "Warmup ended, phone not detected; locking screen.",
+        "app_exited_unexpected": "{app_process} exited unexpectedly!",
+        "phone_reconnected": "Phone reconnected.",
+        "phone_disconnected": "Phone disconnected.",
+        "phone_not_detected": "Phone not detected ({count}/{threshold}).",
+        "confirm_offline_lock": "Confirmed phone offline, locking screen.",
+        "autostart_enabled": "Autostart enabled.",
+        "autostart_disabled": "Autostart disabled.",
+        "autostart_disable_failed": "Failed to disable autostart: {error}",
+        "autostart_enable_failed": "Failed to enable autostart: {error}",
+        "tray_autostart": "Start with Windows",
+        "tray_quit": "Quit",
+        "tray_init": "{app_name}: Initializing...",
+        "startup": "{app_name} starting...",
+        "monitor_process": "Monitor process: {process}",
+        "check_interval": "Check interval: {seconds} s",
+        "offline_threshold": "Offline threshold: {count} consecutive",
+        "warmup_time": "Warmup time: {seconds} s (lock if not connected)",
+        "exited": "{app_name} exited",
+        "shortcut_desc": "OLock - Phone offline auto-lock",
+    },
+    "zh-Hans": {
+        "check_error": "检测出错: {error}",
+        "tray_waiting": "{app_name}: ⚪ 等待 {app_process}",
+        "tray_warmup": "{app_name}: 🟡 正在连接... ({seconds}秒)",
+        "tray_online": "{app_name}: 🟢 手机在线",
+        "tray_offline": "{app_name}: 🔴 未检测到 ({count}/{threshold})",
+        "waiting_app_start": "等待 {app_process} 启动...",
+        "screen_unlock": "屏幕解锁，重新等待主程序就绪...",
+        "app_started_warmup": "检测到 {app_process} 已运行，开始连接缓冲...",
+        "app_started_warmup_notice": "检测到主程序已启动，进入缓冲期，{seconds} 秒内需检测到手机",
+        "app_exited_back_waiting": "{app_process} 已退出，返回等待状态",
+        "warmup_connected": "缓冲期内检测到手机，连接成功！",
+        "warmup_timeout_lock": "缓冲期结束，未检测到手机，执行锁屏！",
+        "app_exited_unexpected": "{app_process} 意外退出！",
+        "phone_reconnected": "手机重连成功",
+        "phone_disconnected": "手机连接断开",
+        "phone_not_detected": "检测不到手机 ({count}/{threshold})",
+        "confirm_offline_lock": "确认手机离线，锁定屏幕！",
+        "autostart_enabled": "已启用开机自启",
+        "autostart_disabled": "已禁用开机自启",
+        "autostart_disable_failed": "禁用开机自启失败: {error}",
+        "autostart_enable_failed": "启用开机自启失败: {error}",
+        "tray_autostart": "开机自启",
+        "tray_quit": "退出",
+        "tray_init": "{app_name}: 初始化中...",
+        "startup": "{app_name} 启动中...",
+        "monitor_process": "监控进程: {process}",
+        "check_interval": "检测间隔: {seconds} 秒",
+        "offline_threshold": "离线阈值: 连续 {count} 次",
+        "warmup_time": "等待时间: {seconds} 秒（超时未连接将锁屏）",
+        "exited": "{app_name} 已退出",
+        "shortcut_desc": "OLock - 手机离线自动锁屏",
+    },
+    "zh-Hant": {
+        "check_error": "偵測出錯: {error}",
+        "tray_waiting": "{app_name}: ⚪ 等待 {app_process}",
+        "tray_warmup": "{app_name}: 🟡 正在連線... ({seconds}秒)",
+        "tray_online": "{app_name}: 🟢 手機在線",
+        "tray_offline": "{app_name}: 🔴 未偵測到 ({count}/{threshold})",
+        "waiting_app_start": "等待 {app_process} 啟動...",
+        "screen_unlock": "螢幕解鎖，重新等待主程式就緒...",
+        "app_started_warmup": "偵測到 {app_process} 已執行，開始連線緩衝...",
+        "app_started_warmup_notice": "偵測到主程式已啟動，進入緩衝期，{seconds} 秒內需偵測到手機",
+        "app_exited_back_waiting": "{app_process} 已退出，返回等待狀態",
+        "warmup_connected": "緩衝期內偵測到手機，連線成功！",
+        "warmup_timeout_lock": "緩衝期結束，未偵測到手機，執行鎖屏！",
+        "app_exited_unexpected": "{app_process} 意外退出！",
+        "phone_reconnected": "手機重新連線成功",
+        "phone_disconnected": "手機連線中斷",
+        "phone_not_detected": "偵測不到手機 ({count}/{threshold})",
+        "confirm_offline_lock": "確認手機離線，鎖定螢幕！",
+        "autostart_enabled": "已啟用開機自啟",
+        "autostart_disabled": "已停用開機自啟",
+        "autostart_disable_failed": "停用開機自啟失敗: {error}",
+        "autostart_enable_failed": "啟用開機自啟失敗: {error}",
+        "tray_autostart": "開機自啟",
+        "tray_quit": "退出",
+        "tray_init": "{app_name}: 初始化中...",
+        "startup": "{app_name} 啟動中...",
+        "monitor_process": "監控行程: {process}",
+        "check_interval": "檢測間隔: {seconds} 秒",
+        "offline_threshold": "離線閾值: 連續 {count} 次",
+        "warmup_time": "等待時間: {seconds} 秒（逾時未連線將鎖屏）",
+        "exited": "{app_name} 已退出",
+        "shortcut_desc": "OLock - 手機離線自動鎖屏",
+    },
+}
+
+LANG = get_ui_language()
+
+
+def tr(key, **kwargs):
+    text = TEXTS.get(LANG, TEXTS["en"]).get(key, key)
+    return text.format(**kwargs)
 
 
 def is_private_ip(ip_str):
@@ -73,7 +218,7 @@ def check_phone_connection():
                     # 进程已退出或无权限访问
                     continue
     except Exception as e:
-        print(f"检测出错: {e}")
+        print(tr("check_error", error=e))
     return False
 
 
@@ -130,13 +275,18 @@ def create_icon_image(state):
 def get_status_text():
     """获取托盘图标的悬停提示文本"""
     if is_waiting_for_app:
-        return f"BleLock: ⚪ 等待 {APP_PROCESS_NAME}"
+        return tr("tray_waiting", app_name=APP_NAME, app_process=APP_PROCESS_NAME)
     elif is_warmup:
-        return f"BleLock: 🟡 正在连接... ({warmup_remaining}秒)"
+        return tr("tray_warmup", app_name=APP_NAME, seconds=warmup_remaining)
     elif is_online:
-        return "BleLock: 🟢 手机在线"
+        return tr("tray_online", app_name=APP_NAME)
     else:
-        return f"BleLock: 🔴 未检测到 ({offline_count}/{OFFLINE_THRESHOLD})"
+        return tr(
+            "tray_offline",
+            app_name=APP_NAME,
+            count=offline_count,
+            threshold=OFFLINE_THRESHOLD,
+        )
 
 
 def get_icon_state():
@@ -174,7 +324,7 @@ def start_waiting_for_app():
     is_warmup = False
     is_online = False
     offline_count = 0
-    print(f"等待 {APP_PROCESS_NAME} 启动...")
+    print(tr("waiting_app_start", app_process=APP_PROCESS_NAME))
 
 
 def start_warmup():
@@ -187,7 +337,7 @@ def start_warmup():
     warmup_remaining = warmup_time
     offline_count = 0
     is_online = False  # 缓冲期开始时默认未连接
-    print(f"检测到主程序已启动，进入缓冲期，{warmup_time} 秒内需检测到手机")
+    print(tr("app_started_warmup_notice", seconds=warmup_time))
 
 
 def monitor_loop():
@@ -211,7 +361,7 @@ def monitor_loop():
         
         # 状态变迁：从锁定 -> 解锁
         if was_locked and not currently_locked:
-            print("屏幕解锁，重新等待主程序就绪...")
+            print(tr("screen_unlock"))
             start_waiting_for_app()
         
         was_locked = currently_locked
@@ -224,7 +374,7 @@ def monitor_loop():
         # --- 阶段 1: 等待主程序启动 (灰色) ---
         if is_waiting_for_app:
             if is_app_running():
-                print(f"检测到 {APP_PROCESS_NAME} 已运行，开始连接缓冲...")
+                print(tr("app_started_warmup", app_process=APP_PROCESS_NAME))
                 start_warmup()  # 进入黄色缓冲期
             else:
                 # 主程序未启动，保持灰色，不锁屏
@@ -235,7 +385,7 @@ def monitor_loop():
         if is_warmup:
             # 实时检测主程序是否还在
             if not is_app_running():
-                print(f"{APP_PROCESS_NAME} 已退出，返回等待状态")
+                print(tr("app_exited_back_waiting", app_process=APP_PROCESS_NAME))
                 start_waiting_for_app()
                 continue
             
@@ -244,7 +394,7 @@ def monitor_loop():
             
             if connected:
                 # 成功连接，且之前是缓冲期：变绿，结束缓冲
-                print("缓冲期内检测到手机，连接成功！")
+                print(tr("warmup_connected"))
                 is_warmup = False
                 warmup_remaining = 0
                 offline_count = 0
@@ -260,7 +410,7 @@ def monitor_loop():
                 
                 if warmup_remaining <= 0:
                     # 超时未连接：锁屏
-                    print("缓冲期结束，未检测到手机，执行锁屏！")
+                    print(tr("warmup_timeout_lock"))
                     lock_screen()
                     # 锁屏指令发出后，立即进入下一次循环
                     # 此时 was_locked 会变为 True，循环将暂停检测
@@ -281,7 +431,7 @@ def monitor_loop():
         
         app_running = is_app_running()
         if not app_running:
-            print(f"{APP_PROCESS_NAME} 意外退出！")
+            print(tr("app_exited_unexpected", app_process=APP_PROCESS_NAME))
             connected = False
         else:
             connected = check_phone_connection()
@@ -289,19 +439,25 @@ def monitor_loop():
         if connected:
             # 连接正常
             if not is_online:
-                print("手机重连成功")
+                print(tr("phone_reconnected"))
                 is_online = True
             offline_count = 0
         else:
             # 连接断开
             if is_online:
-                print("手机连接断开")
+                print(tr("phone_disconnected"))
             is_online = False
             offline_count += 1
-            print(f"检测不到手机 ({offline_count}/{OFFLINE_THRESHOLD})")
+            print(
+                tr(
+                    "phone_not_detected",
+                    count=offline_count,
+                    threshold=OFFLINE_THRESHOLD,
+                )
+            )
             
             if offline_count >= OFFLINE_THRESHOLD:
-                print("确认手机离线，锁定屏幕！")
+                print(tr("confirm_offline_lock"))
                 lock_screen()
                 offline_count = 0
                 # 锁屏后程序继续运行，下一次循环发现屏幕被锁定，会暂停检测
@@ -322,7 +478,7 @@ def get_startup_folder():
 
 def get_shortcut_path():
     """获取快捷方式的完整路径"""
-    return get_startup_folder() / 'BleLock.lnk'
+    return get_startup_folder() / 'OLock.lnk'
 
 
 def is_autostart_enabled():
@@ -338,16 +494,16 @@ def toggle_autostart(icon_obj, item):
         # 已启用，则删除快捷方式
         try:
             shortcut_path.unlink()
-            print("已禁用开机自启")
+            print(tr("autostart_disabled"))
         except Exception as e:
-            print(f"禁用开机自启失败: {e}")
+            print(tr("autostart_disable_failed", error=e))
     else:
         # 未启用，则创建快捷方式
         try:
             create_shortcut(shortcut_path)
-            print("已启用开机自启")
+            print(tr("autostart_enabled"))
         except Exception as e:
-            print(f"启用开机自启失败: {e}")
+            print(tr("autostart_enable_failed", error=e))
 
 
 def create_shortcut(shortcut_path):
@@ -372,7 +528,7 @@ def create_shortcut(shortcut_path):
     
     shortcut.Targetpath = target
     shortcut.WorkingDirectory = os.path.dirname(os.path.abspath(__file__))
-    shortcut.Description = "BleLock - 手机离线自动锁屏"
+    shortcut.Description = tr("shortcut_desc")
     shortcut.save()
 
 
@@ -391,19 +547,19 @@ def setup_tray_icon():
     # 创建菜单
     menu = pystray.Menu(
         pystray.MenuItem(
-            "开机自启",
+            tr("tray_autostart"),
             toggle_autostart,
             checked=lambda item: is_autostart_enabled()
         ),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("退出", quit_app)
+        pystray.MenuItem(tr("tray_quit"), quit_app)
     )
     
     # 创建托盘图标
     icon = pystray.Icon(
-        "BleLock",
+        APP_NAME,
         create_icon_image('warmup'),
-        "BleLock: 初始化中...",
+        tr("tray_init", app_name=APP_NAME),
         menu
     )
     
@@ -414,11 +570,11 @@ def main():
     """主函数"""
     global icon
     
-    print("BleLock 启动中...")
-    print(f"监控进程: {PROCESS_NAME}")
-    print(f"检测间隔: {CHECK_INTERVAL} 秒")
-    print(f"离线阈值: 连续 {OFFLINE_THRESHOLD} 次")
-    print(f"等待时间: {max(30, min(600, WARMUP_TIME))} 秒（超时未连接将锁屏）")
+    print(tr("startup", app_name=APP_NAME))
+    print(tr("monitor_process", process=PROCESS_NAME))
+    print(tr("check_interval", seconds=CHECK_INTERVAL))
+    print(tr("offline_threshold", count=OFFLINE_THRESHOLD))
+    print(tr("warmup_time", seconds=max(30, min(600, WARMUP_TIME))))
     
     # 创建托盘图标
     icon = setup_tray_icon()
@@ -430,7 +586,7 @@ def main():
     # 运行托盘图标（这会阻塞主线程）
     icon.run()
     
-    print("BleLock 已退出")
+    print(tr("exited", app_name=APP_NAME))
 
 
 if __name__ == "__main__":
