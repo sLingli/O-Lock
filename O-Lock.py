@@ -1,4 +1,14 @@
 # -*- coding: utf-8 -*-
+
+import sys
+import traceback
+
+def crash_log(exc_type, exc_value, exc_tb):
+    with open("crash.log", "w", encoding="utf-8") as f:
+        f.write("".join(traceback.format_exception(exc_type, exc_value, exc_tb)))
+
+sys.excepthook = crash_log
+
 """
 OLock - Phone offline auto-lock tool
 Detects OPPO Connect network activity to determine phone presence.
