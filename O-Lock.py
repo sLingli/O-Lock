@@ -209,10 +209,11 @@ def check_phone_connection():
                     for conn in connections:
                         # 检查是否是 ESTABLISHED 状态
                         if conn.status == psutil.CONN_ESTABLISHED:
-                            # 检查远程地址是否存在且是 192.168.x.x
+                            # 检查远程地址是否存在
                             if conn.raddr and len(conn.raddr) >= 1:
                                 remote_ip = conn.raddr[0]
-                                if remote_ip.startswith('192.168.'):
+                                # 192.168.x.x (WiFi模式) 或 10.x.x.x (热点模式)，排除本机IP 10.161.156.1
+                                if (remote_ip.startswith('192.168.') or remote_ip.startswith('10.')) and not remote_ip.startswith('10.161.156.1'):
                                     return True
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     # 进程已退出或无权限访问
