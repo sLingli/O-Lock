@@ -18,7 +18,7 @@
 
 ## 🇨🇳 中文介绍
 
-**O-Lock** 是一款专为 **OPPO / OnePlus** 用户打造的 Windows 智能锁屏工具。
+**O-Lock** 是一款专为 **OPPO / OnePlus/Realme** 用户打造的 Windows 智能锁屏工具。
 
 它是为了解决 **OPPO 互联 (PC Connect)** 与 Windows 自带“动态锁”冲突的问题而生。
 
