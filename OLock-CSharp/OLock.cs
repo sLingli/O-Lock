@@ -28,13 +28,31 @@ namespace OLock
         static bool isOnline = false;
         static volatile bool running = true;
         static NotifyIcon trayIcon;
+        static Form messageForm;
         static bool isWarmup = false;
         static bool isWaitingForApp = true;
         static int warmupRemaining = 0;
         static bool wasLocked = false;
         static string currentLang;
 
+        static bool autoSleep = false;
+        static Process sleepProcess = null;
+
         // Windows API
+        [DllImport("user32.dll")]
+        static extern bool SendNotifyMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        static extern bool PostMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
+        
+        [DllImport("user32.dll")]
+        static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, uint dwExtraInfo);
+
+        const int HWND_BROADCAST = 0xFFFF;
+        const int WM_SYSCOMMAND = 0x0112;
+        const int SC_MONITORPOWER = 0xF170;
+        const int MONITOR_OFF = 2;
+        
         [DllImport("kernel32.dll")]
         static extern IntPtr GetConsoleWindow();
 
@@ -63,6 +81,7 @@ namespace OLock
                 ["tray_online"] = "{0}: 🟢 Phone online",
                 ["tray_offline"] = "{0}: 🔴 Not detected ({1}/{2})",
                 ["tray_autostart"] = "Start with Windows",
+                ["tray_autosleep"] = "Sleep when offline",
                 ["tray_quit"] = "Quit",
                 ["tray_init"] = "{0}: Initializing..."
             },
@@ -73,6 +92,7 @@ namespace OLock
                 ["tray_online"] = "{0}: 🟢 手机在线",
                 ["tray_offline"] = "{0}: 🔴 未检测到 ({1}/{2})",
                 ["tray_autostart"] = "开机自启",
+                ["tray_autosleep"] = "离线后睡眠",
                 ["tray_quit"] = "退出",
                 ["tray_init"] = "{0}: 初始化中..."
             },
@@ -83,6 +103,7 @@ namespace OLock
                 ["tray_online"] = "{0}: 🟢 手機在線",
                 ["tray_offline"] = "{0}: 🔴 未偵測到 ({1}/{2})",
                 ["tray_autostart"] = "開機自啟",
+                ["tray_autosleep"] = "斷線後睡眠",
                 ["tray_quit"] = "退出",
                 ["tray_init"] = "{0}: 初始化中..."
             }
@@ -98,6 +119,7 @@ namespace OLock
 
             // 检测系统语言
             currentLang = GetUILanguage();
+            LoadSettings();
 
             // 初始化托盘图标
             Application.EnableVisualStyles();
@@ -149,6 +171,19 @@ namespace OLock
 
         static void InitTrayIcon()
         {
+            // 创建一个隐藏窗口用于接收消息
+            messageForm = new Form
+            {
+                ShowInTaskbar = false,
+                WindowState = FormWindowState.Minimized,
+                FormBorderStyle = FormBorderStyle.None,
+                Opacity = 0
+            };
+            // 强制创建句柄，以便接收消息
+            var h = messageForm.Handle; 
+            
+            messageForm.Load += (s, e) => messageForm.Visible = false;
+
             trayIcon = new NotifyIcon
             {
                 Icon = CreateIcon("waiting"),
@@ -172,6 +207,16 @@ namespace OLock
                 autostartItem.Checked = IsAutostartEnabled();
             };
 
+            var autoSleepItem = new ToolStripMenuItem(Tr("tray_autosleep"))
+            {
+                Checked = autoSleep
+            };
+            autoSleepItem.Click += (s, e) =>
+            {
+                UpdateAutoSleep(!autoSleep);
+                autoSleepItem.Checked = autoSleep;
+            };
+
             var quitItem = new ToolStripMenuItem(Tr("tray_quit"));
             quitItem.Click += (s, e) =>
             {
@@ -181,6 +226,7 @@ namespace OLock
             };
 
             menu.Items.Add(autostartItem);
+            menu.Items.Add(autoSleepItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(quitItem);
 
@@ -351,6 +397,49 @@ namespace OLock
             isOnline = false;
         }
 
+        static void PerformSleep()
+        {
+            try
+            {
+                // 方案1 (用户指定): 使用 UseShellExecute = true 启动外部进程
+                // 这有助于绕过安全桌面的隔离问题
+                Process.Start(new ProcessStartInfo {
+                    FileName = "rundll32.exe",
+                    Arguments = "powrprof.dll,SetSuspendState 0,1,0",
+                    CreateNoWindow = true,
+                    UseShellExecute = true
+                });
+
+                // 方案2 (备用): 通过 cmd.exe 执行
+                Process.Start(new ProcessStartInfo {
+                    FileName = "cmd.exe",
+                    Arguments = "/c rundll32.exe powrprof.dll,SetSuspendState 0,1,0",
+                    CreateNoWindow = true,
+                    UseShellExecute = false // cmd 需要 false 才能隐窗
+                });
+            }
+            catch { }
+        }
+
+        static void CancelPendingSleep()
+        {
+            try
+            {
+                if (sleepProcess != null && !sleepProcess.HasExited)
+                {
+                    sleepProcess.Kill();
+                    sleepProcess = null;
+                }
+            }
+            catch { }
+        }
+
+        static void TriggerLock()
+        {
+            // 正常执行锁屏
+            LockWorkStation();
+        }
+
         static void MonitorLoop()
         {
             StartWaitingForApp();
@@ -362,7 +451,10 @@ namespace OLock
 
                 // 从锁定变为解锁
                 if (wasLocked && !currentlyLocked)
+                {
                     StartWaitingForApp();
+                    CancelPendingSleep(); // 解锁视为恢复使用，取消睡眠
+                }
 
                 wasLocked = currentlyLocked;
 
@@ -376,6 +468,7 @@ namespace OLock
                 // 阶段1: 等待主程序启动 (灰色)
                 if (isWaitingForApp)
                 {
+                    CancelPendingSleep(); // 应用没启动也无需睡眠
                     if (IsAppRunning())
                         StartWarmup();
                     else
@@ -398,6 +491,7 @@ namespace OLock
                     bool connected = CheckPhoneConnection();
                     if (connected)
                     {
+                        CancelPendingSleep();
                         isWarmup = false;
                         warmupRemaining = 0;
                         offlineCount = 0;
@@ -410,7 +504,7 @@ namespace OLock
 
                         if (warmupRemaining <= 0)
                         {
-                            LockWorkStation();
+                            TriggerLock();
                             Thread.Sleep(1000);
                             continue;
                         }
@@ -430,17 +524,36 @@ namespace OLock
                 bool phoneConnected = CheckPhoneConnection();
                 if (phoneConnected)
                 {
+                    CancelPendingSleep(); // 恢复连接，取消睡眠
                     isOnline = true;
                     offlineCount = 0;
                 }
                 else
                 {
+                    // 首次检测到离线时，如果开启了自动睡眠，则预启动睡眠进程
+                    if (offlineCount == 0 && autoSleep)
+                    {
+                        CancelPendingSleep(); // 确保没有残留
+                        try 
+                        {
+                            // 启动一个 cmd 进程，延迟执行睡眠
+                            sleepProcess = Process.Start(new ProcessStartInfo {
+                                FileName = "cmd.exe",
+                                Arguments = "/c timeout /t 10 /nobreak >nul && rundll32.exe powrprof.dll,SetSuspendState 0,1,0",
+                                CreateNoWindow = true,
+                                WindowStyle = ProcessWindowStyle.Hidden,
+                                UseShellExecute = false
+                            });
+                        }
+                        catch { }
+                    }
+
                     isOnline = false;
                     offlineCount++;
 
                     if (offlineCount >= OFFLINE_THRESHOLD)
                     {
-                        LockWorkStation();
+                        TriggerLock();
                         offlineCount = 0;
                     }
                 }
@@ -481,6 +594,41 @@ namespace OLock
                     {
                         string exePath = Process.GetCurrentProcess().MainModule.FileName;
                         key.SetValue(APP_NAME, $"\"{exePath}\"");
+                    }
+                }
+            }
+            catch { }
+        }
+
+        static void LoadSettings()
+        {
+            try
+            {
+                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\OLock", false))
+                {
+                    if (key != null)
+                    {
+                        var value = key.GetValue("AutoSleep");
+                        if (value != null)
+                        {
+                            autoSleep = Convert.ToBoolean(value);
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        static void UpdateAutoSleep(bool enable)
+        {
+            try
+            {
+                using (var key = Registry.CurrentUser.CreateSubKey(@"Software\OLock"))
+                {
+                    if (key != null)
+                    {
+                        key.SetValue("AutoSleep", enable);
+                        autoSleep = enable;
                     }
                 }
             }
