@@ -36,6 +36,7 @@ namespace OLock
         static string currentLang;
 
         static bool autoSleep = false;
+        static bool autoScreenOff = false;
         static Process sleepProcess = null;
 
         // Windows API
@@ -82,6 +83,7 @@ namespace OLock
                 ["tray_offline"] = "{0}: 🔴 Not detected ({1}/{2})",
                 ["tray_autostart"] = "Start with Windows",
                 ["tray_autosleep"] = "Sleep when offline",
+                ["tray_autoscreenoff"] = "Turn off screen when offline",
                 ["tray_quit"] = "Quit",
                 ["tray_init"] = "{0}: Initializing..."
             },
@@ -93,6 +95,7 @@ namespace OLock
                 ["tray_offline"] = "{0}: 🔴 未检测到 ({1}/{2})",
                 ["tray_autostart"] = "开机自启",
                 ["tray_autosleep"] = "离线后睡眠",
+                ["tray_autoscreenoff"] = "离线后息屏",
                 ["tray_quit"] = "退出",
                 ["tray_init"] = "{0}: 初始化中..."
             },
@@ -104,6 +107,7 @@ namespace OLock
                 ["tray_offline"] = "{0}: 🔴 未偵測到 ({1}/{2})",
                 ["tray_autostart"] = "開機自啟",
                 ["tray_autosleep"] = "斷線後睡眠",
+                ["tray_autoscreenoff"] = "斷線後關閉螢幕",
                 ["tray_quit"] = "退出",
                 ["tray_init"] = "{0}: 初始化中..."
             }
@@ -211,10 +215,30 @@ namespace OLock
             {
                 Checked = autoSleep
             };
+
+            var autoScreenOffItem = new ToolStripMenuItem(Tr("tray_autoscreenoff"))
+            {
+                Checked = autoScreenOff
+            };
+
             autoSleepItem.Click += (s, e) =>
             {
-                UpdateAutoSleep(!autoSleep);
+                autoSleep = !autoSleep;
+                if (autoSleep) autoScreenOff = false; // 互斥
+                
                 autoSleepItem.Checked = autoSleep;
+                autoScreenOffItem.Checked = autoScreenOff;
+                SaveSettings();
+            };
+
+            autoScreenOffItem.Click += (s, e) =>
+            {
+                autoScreenOff = !autoScreenOff;
+                if (autoScreenOff) autoSleep = false; // 互斥
+
+                autoScreenOffItem.Checked = autoScreenOff;
+                autoSleepItem.Checked = autoSleep;
+                SaveSettings();
             };
 
             var quitItem = new ToolStripMenuItem(Tr("tray_quit"));
@@ -227,6 +251,7 @@ namespace OLock
 
             menu.Items.Add(autostartItem);
             menu.Items.Add(autoSleepItem);
+            menu.Items.Add(autoScreenOffItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(quitItem);
 
@@ -397,30 +422,6 @@ namespace OLock
             isOnline = false;
         }
 
-        static void PerformSleep()
-        {
-            try
-            {
-                // 方案1 (用户指定): 使用 UseShellExecute = true 启动外部进程
-                // 这有助于绕过安全桌面的隔离问题
-                Process.Start(new ProcessStartInfo {
-                    FileName = "rundll32.exe",
-                    Arguments = "powrprof.dll,SetSuspendState 0,1,0",
-                    CreateNoWindow = true,
-                    UseShellExecute = true
-                });
-
-                // 方案2 (备用): 通过 cmd.exe 执行
-                Process.Start(new ProcessStartInfo {
-                    FileName = "cmd.exe",
-                    Arguments = "/c rundll32.exe powrprof.dll,SetSuspendState 0,1,0",
-                    CreateNoWindow = true,
-                    UseShellExecute = false // cmd 需要 false 才能隐窗
-                });
-            }
-            catch { }
-        }
-
         static void CancelPendingSleep()
         {
             try
@@ -530,22 +531,44 @@ namespace OLock
                 }
                 else
                 {
-                    // 首次检测到离线时，如果开启了自动睡眠，则预启动睡眠进程
-                    if (offlineCount == 0 && autoSleep)
+                    // 首次检测到离线时，预启动操作进程
+                    if (offlineCount == 0)
                     {
-                        CancelPendingSleep(); // 确保没有残留
-                        try 
+                        if (autoSleep || autoScreenOff)
                         {
-                            // 启动一个 cmd 进程，延迟执行睡眠
-                            sleepProcess = Process.Start(new ProcessStartInfo {
-                                FileName = "cmd.exe",
-                                Arguments = "/c timeout /t 10 /nobreak >nul && rundll32.exe powrprof.dll,SetSuspendState 0,1,0",
-                                CreateNoWindow = true,
-                                WindowStyle = ProcessWindowStyle.Hidden,
-                                UseShellExecute = false
-                            });
+                            CancelPendingSleep(); // 确保没有残留
+                            try 
+                            {
+                                if (autoSleep)
+                                {
+                                    // 启动睡眠定时器: 1分钟后执行睡眠
+                                    sleepProcess = Process.Start(new ProcessStartInfo {
+                                        FileName = "cmd.exe",
+                                        Arguments = "/c timeout /t 60 /nobreak >nul && rundll32.exe powrprof.dll,SetSuspendState 0,1,0",
+                                        CreateNoWindow = true,
+                                        WindowStyle = ProcessWindowStyle.Hidden,
+                                        UseShellExecute = false
+                                    });
+                                }
+                                else if (autoScreenOff)
+                                {
+                                    // 启动息屏定时器: 1分钟后执行 PowerShell 关闭显示器
+                                    // PowerShell 需要完全限定路径或在 path 中，通常直接用 powershell 即可
+                                    // 命令很长，通过 cmd /c 调用
+                                    string psCmd = "(Add-Type '[DllImport(\\\"user32.dll\\\")] public static extern int SendMessage(int hWnd, int hMsg, int wParam, int lParam);' -Name a -Pas)::SendMessage(-1, 0x0112, 0xF170, 2)";
+                                    string fullCmd = $"/c timeout /t 60 /nobreak >nul && powershell -NoProfile -WindowStyle Hidden -Command \"{psCmd}\"";
+
+                                    sleepProcess = Process.Start(new ProcessStartInfo {
+                                        FileName = "cmd.exe",
+                                        Arguments = fullCmd,
+                                        CreateNoWindow = true,
+                                        WindowStyle = ProcessWindowStyle.Hidden,
+                                        UseShellExecute = false
+                                    });
+                                }
+                            }
+                            catch { }
                         }
-                        catch { }
                     }
 
                     isOnline = false;
@@ -608,18 +631,21 @@ namespace OLock
                 {
                     if (key != null)
                     {
-                        var value = key.GetValue("AutoSleep");
-                        if (value != null)
-                        {
-                            autoSleep = Convert.ToBoolean(value);
-                        }
+                        var sleepVal = key.GetValue("AutoSleep");
+                        if (sleepVal != null) autoSleep = Convert.ToBoolean(sleepVal);
+
+                        var screenVal = key.GetValue("AutoScreenOff");
+                        if (screenVal != null) autoScreenOff = Convert.ToBoolean(screenVal);
+
+                        // 确保启动时也是互斥的（以防注册表被手动改乱）
+                        if (autoSleep && autoScreenOff) autoScreenOff = false;
                     }
                 }
             }
             catch { }
         }
 
-        static void UpdateAutoSleep(bool enable)
+        static void SaveSettings()
         {
             try
             {
@@ -627,8 +653,8 @@ namespace OLock
                 {
                     if (key != null)
                     {
-                        key.SetValue("AutoSleep", enable);
-                        autoSleep = enable;
+                        key.SetValue("AutoSleep", autoSleep);
+                        key.SetValue("AutoScreenOff", autoScreenOff);
                     }
                 }
             }
