@@ -541,10 +541,12 @@ namespace OLock
                             {
                                 if (autoSleep)
                                 {
-                                    // 启动睡眠定时器: 1分钟后执行睡眠
+                                    // 启动睡眠定时器
+
+                                    
                                     sleepProcess = Process.Start(new ProcessStartInfo {
                                         FileName = "cmd.exe",
-                                        Arguments = "/c timeout /t 60 /nobreak >nul && rundll32.exe powrprof.dll,SetSuspendState 0,1,0",
+                                        Arguments = "/c ping 127.0.0.1 -n 10 >nul && rundll32.exe powrprof.dll,SetSuspendState 0,1,0",
                                         CreateNoWindow = true,
                                         WindowStyle = ProcessWindowStyle.Hidden,
                                         UseShellExecute = false
@@ -552,15 +554,12 @@ namespace OLock
                                 }
                                 else if (autoScreenOff)
                                 {
-                                    // 启动息屏定时器: 1分钟后执行 PowerShell 关闭显示器
-                                    // PowerShell 需要完全限定路径或在 path 中，通常直接用 powershell 即可
-                                    // 命令很长，通过 cmd /c 调用
-                                    string psCmd = "(Add-Type '[DllImport(\\\"user32.dll\\\")] public static extern int SendMessage(int hWnd, int hMsg, int wParam, int lParam);' -Name a -Pas)::SendMessage(-1, 0x0112, 0xF170, 2)";
-                                    string fullCmd = $"/c timeout /t 60 /nobreak >nul && powershell -NoProfile -WindowStyle Hidden -Command \"{psCmd}\"";
+                                    // 启动息屏定时器
+                                    string cmd = "/c ping 127.0.0.1 -n 10 >nul && powershell -Command \"(Add-Type '[DllImport(\\\"user32.dll\\\")] public static extern int SendMessage(int hWnd, int hMsg, int wParam, int lParam);' -Name a -Pas)::SendMessage(-1, 0x0112, 0xF170, 2)\"";
 
                                     sleepProcess = Process.Start(new ProcessStartInfo {
                                         FileName = "cmd.exe",
-                                        Arguments = fullCmd,
+                                        Arguments = cmd,
                                         CreateNoWindow = true,
                                         WindowStyle = ProcessWindowStyle.Hidden,
                                         UseShellExecute = false
