@@ -82,8 +82,8 @@ namespace OLock
                 ["tray_online"] = "{0}: 🟢 Phone online",
                 ["tray_offline"] = "{0}: 🔴 Not detected ({1}/{2})",
                 ["tray_autostart"] = "Start with Windows",
-                ["tray_autosleep"] = "Sleep when offline",
-                ["tray_autoscreenoff"] = "Turn off screen when offline",
+                ["tray_autosleep"] = "Sleep",
+                ["tray_autoscreenoff"] = "Turn off screen",
                 ["tray_quit"] = "Quit",
                 ["tray_init"] = "{0}: Initializing..."
             },
@@ -94,8 +94,8 @@ namespace OLock
                 ["tray_online"] = "{0}: 🟢 手机在线",
                 ["tray_offline"] = "{0}: 🔴 未检测到 ({1}/{2})",
                 ["tray_autostart"] = "开机自启",
-                ["tray_autosleep"] = "离线后睡眠",
-                ["tray_autoscreenoff"] = "离线后息屏",
+                ["tray_autosleep"] = "睡眠",
+                ["tray_autoscreenoff"] = "息屏",
                 ["tray_quit"] = "退出",
                 ["tray_init"] = "{0}: 初始化中..."
             },
@@ -106,8 +106,8 @@ namespace OLock
                 ["tray_online"] = "{0}: 🟢 手機在線",
                 ["tray_offline"] = "{0}: 🔴 未偵測到 ({1}/{2})",
                 ["tray_autostart"] = "開機自啟",
-                ["tray_autosleep"] = "斷線後睡眠",
-                ["tray_autoscreenoff"] = "斷線後關閉螢幕",
+                ["tray_autosleep"] = "睡眠",
+                ["tray_autoscreenoff"] = "關閉螢幕",
                 ["tray_quit"] = "退出",
                 ["tray_init"] = "{0}: 初始化中..."
             }
@@ -539,24 +539,12 @@ namespace OLock
                             CancelPendingSleep(); // 确保没有残留
                             try 
                             {
-                                if (autoSleep)
+                                if (autoScreenOff)
                                 {
-                                    // 启动睡眠定时器
-
-                                    
-                                    sleepProcess = Process.Start(new ProcessStartInfo {
-                                        FileName = "cmd.exe",
-                                        Arguments = "/c ping 127.0.0.1 -n 10 >nul && rundll32.exe powrprof.dll,SetSuspendState 0,1,0",
-                                        CreateNoWindow = true,
-                                        WindowStyle = ProcessWindowStyle.Hidden,
-                                        UseShellExecute = false
-                                    });
-                                }
-                                else if (autoScreenOff)
-                                {
-                                    // 启动息屏定时器
-                                    string cmd = "/c ping 127.0.0.1 -n 10 >nul && powershell -Command \"(Add-Type '[DllImport(\\\"user32.dll\\\")] public static extern int SendMessage(int hWnd, int hMsg, int wParam, int lParam);' -Name a -Pas)::SendMessage(-1, 0x0112, 0xF170, 2)\"";
-
+                                    // 启动息屏定时器: 20秒后执行 PowerShell 关闭显示器
+                                    // 使用简单的 ping 延迟 + PowerShell 命令
+                                    string cmd = "/c ping 127.0.0.1 -n 11 >nul && powershell -Command \"(Add-Type '[DllImport(\\\"user32.dll\\\")] public static extern int SendMessage(int hWnd, int hMsg, int wParam, int lParam);' -Name a -Pas)::SendMessage(-1, 0x0112, 0xF170, 2)\"";
+                                        
                                     sleepProcess = Process.Start(new ProcessStartInfo {
                                         FileName = "cmd.exe",
                                         Arguments = cmd,
@@ -575,7 +563,21 @@ namespace OLock
 
                     if (offlineCount >= OFFLINE_THRESHOLD)
                     {
-                        TriggerLock();
+                        if (autoSleep)
+                        {
+                            // 检测到三次未连接到手机，直接进入睡眠模式
+                            Process.Start(new ProcessStartInfo {
+                                FileName = "rundll32.exe",
+                                Arguments = "powrprof.dll,SetSuspendState 0,1,0",
+                                CreateNoWindow = true,
+                                WindowStyle = ProcessWindowStyle.Hidden,
+                                UseShellExecute = false
+                            });
+                        }
+                        else
+                        {
+                            TriggerLock();
+                        }
                         offlineCount = 0;
                     }
                 }
