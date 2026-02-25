@@ -36,8 +36,6 @@ namespace OLock
         static string currentLang;
 
         static bool autoSleep = false;
-        static bool autoScreenOff = false;
-        static Process sleepProcess = null;
 
         // Windows API
         [DllImport("user32.dll")]
@@ -83,7 +81,6 @@ namespace OLock
                 ["tray_offline"] = "{0}: 🔴 Not detected ({1}/{2})",
                 ["tray_autostart"] = "Start with Windows",
                 ["tray_autosleep"] = "Sleep",
-                ["tray_autoscreenoff"] = "Turn off screen",
                 ["tray_quit"] = "Quit",
                 ["tray_init"] = "{0}: Initializing..."
             },
@@ -95,7 +92,6 @@ namespace OLock
                 ["tray_offline"] = "{0}: 🔴 未检测到 ({1}/{2})",
                 ["tray_autostart"] = "开机自启",
                 ["tray_autosleep"] = "睡眠",
-                ["tray_autoscreenoff"] = "息屏",
                 ["tray_quit"] = "退出",
                 ["tray_init"] = "{0}: 初始化中..."
             },
@@ -107,7 +103,6 @@ namespace OLock
                 ["tray_offline"] = "{0}: 🔴 未偵測到 ({1}/{2})",
                 ["tray_autostart"] = "開機自啟",
                 ["tray_autosleep"] = "睡眠",
-                ["tray_autoscreenoff"] = "關閉螢幕",
                 ["tray_quit"] = "退出",
                 ["tray_init"] = "{0}: 初始化中..."
             }
@@ -128,6 +123,9 @@ namespace OLock
             // 初始化托盘图标
             Application.EnableVisualStyles();
             InitTrayIcon();
+
+            // 监听系统电源事件 (S3唤醒)
+            SystemEvents.PowerModeChanged += OnPowerModeChanged;
 
             // 启动监控线程
             var monitorThread = new Thread(MonitorLoop) { IsBackground = true };
@@ -216,27 +214,9 @@ namespace OLock
                 Checked = autoSleep
             };
 
-            var autoScreenOffItem = new ToolStripMenuItem(Tr("tray_autoscreenoff"))
-            {
-                Checked = autoScreenOff
-            };
-
             autoSleepItem.Click += (s, e) =>
             {
                 autoSleep = !autoSleep;
-                if (autoSleep) autoScreenOff = false; // 互斥
-                
-                autoSleepItem.Checked = autoSleep;
-                autoScreenOffItem.Checked = autoScreenOff;
-                SaveSettings();
-            };
-
-            autoScreenOffItem.Click += (s, e) =>
-            {
-                autoScreenOff = !autoScreenOff;
-                if (autoScreenOff) autoSleep = false; // 互斥
-
-                autoScreenOffItem.Checked = autoScreenOff;
                 autoSleepItem.Checked = autoSleep;
                 SaveSettings();
             };
@@ -244,6 +224,7 @@ namespace OLock
             var quitItem = new ToolStripMenuItem(Tr("tray_quit"));
             quitItem.Click += (s, e) =>
             {
+                SystemEvents.PowerModeChanged -= OnPowerModeChanged;
                 running = false;
                 trayIcon.Visible = false;
                 Application.Exit();
@@ -251,7 +232,6 @@ namespace OLock
 
             menu.Items.Add(autostartItem);
             menu.Items.Add(autoSleepItem);
-            menu.Items.Add(autoScreenOffItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(quitItem);
 
@@ -412,6 +392,16 @@ namespace OLock
             offlineCount = 0;
         }
 
+        static void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+        {
+            if (e.Mode == PowerModes.Resume)
+            {
+                StartWaitingForApp();
+                // 如果有延迟任务，这里应该取消，目前没有延迟任务，保留注释
+                // CancelPendingSleep(); 
+            }
+        }
+
         static void StartWarmup()
         {
             int warmupTime = Math.Max(30, Math.Min(600, WARMUP_TIME));
@@ -420,19 +410,6 @@ namespace OLock
             warmupRemaining = warmupTime;
             offlineCount = 0;
             isOnline = false;
-        }
-
-        static void CancelPendingSleep()
-        {
-            try
-            {
-                if (sleepProcess != null && !sleepProcess.HasExited)
-                {
-                    sleepProcess.Kill();
-                    sleepProcess = null;
-                }
-            }
-            catch { }
         }
 
         static void TriggerLock()
@@ -454,7 +431,6 @@ namespace OLock
                 if (wasLocked && !currentlyLocked)
                 {
                     StartWaitingForApp();
-                    CancelPendingSleep(); // 解锁视为恢复使用，取消睡眠
                 }
 
                 wasLocked = currentlyLocked;
@@ -469,7 +445,6 @@ namespace OLock
                 // 阶段1: 等待主程序启动 (灰色)
                 if (isWaitingForApp)
                 {
-                    CancelPendingSleep(); // 应用没启动也无需睡眠
                     if (IsAppRunning())
                         StartWarmup();
                     else
@@ -492,7 +467,6 @@ namespace OLock
                     bool connected = CheckPhoneConnection();
                     if (connected)
                     {
-                        CancelPendingSleep();
                         isWarmup = false;
                         warmupRemaining = 0;
                         offlineCount = 0;
@@ -525,39 +499,11 @@ namespace OLock
                 bool phoneConnected = CheckPhoneConnection();
                 if (phoneConnected)
                 {
-                    CancelPendingSleep(); // 恢复连接，取消睡眠
                     isOnline = true;
                     offlineCount = 0;
                 }
                 else
                 {
-                    // 首次检测到离线时，预启动操作进程
-                    if (offlineCount == 0)
-                    {
-                        if (autoSleep || autoScreenOff)
-                        {
-                            CancelPendingSleep(); // 确保没有残留
-                            try 
-                            {
-                                if (autoScreenOff)
-                                {
-                                    // 启动息屏定时器: 20秒后执行 PowerShell 关闭显示器
-                                    // 使用简单的 ping 延迟 + PowerShell 命令
-                                    string cmd = "/c ping 127.0.0.1 -n 11 >nul && powershell -Command \"(Add-Type '[DllImport(\\\"user32.dll\\\")] public static extern int SendMessage(int hWnd, int hMsg, int wParam, int lParam);' -Name a -Pas)::SendMessage(-1, 0x0112, 0xF170, 2)\"";
-                                        
-                                    sleepProcess = Process.Start(new ProcessStartInfo {
-                                        FileName = "cmd.exe",
-                                        Arguments = cmd,
-                                        CreateNoWindow = true,
-                                        WindowStyle = ProcessWindowStyle.Hidden,
-                                        UseShellExecute = false
-                                    });
-                                }
-                            }
-                            catch { }
-                        }
-                    }
-
                     isOnline = false;
                     offlineCount++;
 
@@ -634,12 +580,6 @@ namespace OLock
                     {
                         var sleepVal = key.GetValue("AutoSleep");
                         if (sleepVal != null) autoSleep = Convert.ToBoolean(sleepVal);
-
-                        var screenVal = key.GetValue("AutoScreenOff");
-                        if (screenVal != null) autoScreenOff = Convert.ToBoolean(screenVal);
-
-                        // 确保启动时也是互斥的（以防注册表被手动改乱）
-                        if (autoSleep && autoScreenOff) autoScreenOff = false;
                     }
                 }
             }
@@ -655,7 +595,6 @@ namespace OLock
                     if (key != null)
                     {
                         key.SetValue("AutoSleep", autoSleep);
-                        key.SetValue("AutoScreenOff", autoScreenOff);
                     }
                 }
             }
