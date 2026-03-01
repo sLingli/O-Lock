@@ -36,8 +36,12 @@ namespace OLock
         static string currentLang;
 
         static bool autoSleep = false;
+        static bool autoScreenOff = false;
 
         // Windows API
+        [DllImport("user32.dll")]
+        static extern IntPtr SendMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
+
         [DllImport("user32.dll")]
         static extern bool SendNotifyMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
 
@@ -70,6 +74,12 @@ namespace OLock
         [DllImport("kernel32.dll")]
         static extern ushort GetUserDefaultUILanguage();
 
+        [DllImport("user32.dll")]
+        static extern void mouse_event(uint dwFlags, int dx, int dy, uint dwData, uint dwExtraInfo);
+
+        const uint MOUSEEVENTF_MOVE = 0x0001;
+
+
         // 多语言文本
         static Dictionary<string, Dictionary<string, string>> Texts = new Dictionary<string, Dictionary<string, string>>
         {
@@ -81,6 +91,7 @@ namespace OLock
                 ["tray_offline"] = "{0}: 🔴 Not detected ({1}/{2})",
                 ["tray_autostart"] = "Start with Windows",
                 ["tray_autosleep"] = "Sleep",
+                ["tray_autoscreenoff"] = "Turn off screen",
                 ["tray_quit"] = "Quit",
                 ["tray_init"] = "{0}: Initializing..."
             },
@@ -92,6 +103,7 @@ namespace OLock
                 ["tray_offline"] = "{0}: 🔴 未检测到 ({1}/{2})",
                 ["tray_autostart"] = "开机自启",
                 ["tray_autosleep"] = "睡眠",
+                ["tray_autoscreenoff"] = "关闭屏幕",
                 ["tray_quit"] = "退出",
                 ["tray_init"] = "{0}: 初始化中..."
             },
@@ -103,6 +115,7 @@ namespace OLock
                 ["tray_offline"] = "{0}: 🔴 未偵測到 ({1}/{2})",
                 ["tray_autostart"] = "開機自啟",
                 ["tray_autosleep"] = "睡眠",
+                ["tray_autoscreenoff"] = "关闭屏幕",
                 ["tray_quit"] = "退出",
                 ["tray_init"] = "{0}: 初始化中..."
             }
@@ -217,7 +230,21 @@ namespace OLock
             autoSleepItem.Click += (s, e) =>
             {
                 autoSleep = !autoSleep;
-                autoSleepItem.Checked = autoSleep;
+                if (autoSleep) autoScreenOff = false;
+                UpdateContextMenu();
+                SaveSettings();
+            };
+
+            var autoScreenOffItem = new ToolStripMenuItem(Tr("tray_autoscreenoff"))
+            {
+                Checked = autoScreenOff
+            };
+
+            autoScreenOffItem.Click += (s, e) =>
+            {
+                autoScreenOff = !autoScreenOff;
+                if (autoScreenOff) autoSleep = false;
+                UpdateContextMenu();
                 SaveSettings();
             };
 
@@ -232,10 +259,17 @@ namespace OLock
 
             menu.Items.Add(autostartItem);
             menu.Items.Add(autoSleepItem);
+            menu.Items.Add(autoScreenOffItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(quitItem);
 
             return menu;
+        }
+
+        static void UpdateContextMenu()
+        {
+            if (trayIcon != null)
+                trayIcon.ContextMenuStrip = CreateContextMenu();
         }
 
         static Icon CreateIcon(string state)
@@ -393,14 +427,12 @@ namespace OLock
         }
 
         static void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
-        {
-            if (e.Mode == PowerModes.Resume)
-            {
-                StartWaitingForApp();
-                // 如果有延迟任务，这里应该取消，目前没有延迟任务，保留注释
-                // CancelPendingSleep(); 
-            }
-        }
+{
+    if (e.Mode == PowerModes.Resume)
+    {
+        StartWaitingForApp();
+    }
+}
 
         static void StartWarmup()
         {
@@ -416,6 +448,14 @@ namespace OLock
         {
             // 正常执行锁屏
             LockWorkStation();
+
+            if (autoScreenOff)
+            {
+                // 延迟一会确保锁屏界面已加载
+                Thread.Sleep(500);
+                // 关闭屏幕
+                SendMessage((IntPtr)HWND_BROADCAST, WM_SYSCOMMAND, (IntPtr)SC_MONITORPOWER, (IntPtr)MONITOR_OFF);
+            }
         }
 
         static void MonitorLoop()
@@ -479,7 +519,21 @@ namespace OLock
 
                         if (warmupRemaining <= 0)
                         {
-                            TriggerLock();
+                            if (autoSleep)
+                            {
+                                // 缓冲期结束未连接，进入睡眠
+                                Process.Start(new ProcessStartInfo {
+                                    FileName = "rundll32.exe",
+                                    Arguments = "powrprof.dll,SetSuspendState 0,1,0",
+                                    CreateNoWindow = true,
+                                    WindowStyle = ProcessWindowStyle.Hidden,
+                                    UseShellExecute = false
+                                });
+                            }
+                            else
+                            {
+                                TriggerLock();
+                            }
                             Thread.Sleep(1000);
                             continue;
                         }
@@ -519,6 +573,11 @@ namespace OLock
                                 WindowStyle = ProcessWindowStyle.Hidden,
                                 UseShellExecute = false
                             });
+                        }
+                        else if (autoScreenOff)
+                        {
+                            // 锁屏并关屏
+                            TriggerLock();
                         }
                         else
                         {
@@ -580,6 +639,9 @@ namespace OLock
                     {
                         var sleepVal = key.GetValue("AutoSleep");
                         if (sleepVal != null) autoSleep = Convert.ToBoolean(sleepVal);
+
+                        var screenOffVal = key.GetValue("AutoScreenOff");
+                        if (screenOffVal != null) autoScreenOff = Convert.ToBoolean(screenOffVal);
                     }
                 }
             }
@@ -595,6 +657,7 @@ namespace OLock
                     if (key != null)
                     {
                         key.SetValue("AutoSleep", autoSleep);
+                        key.SetValue("AutoScreenOff", autoScreenOff);
                     }
                 }
             }
