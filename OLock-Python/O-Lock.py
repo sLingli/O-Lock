@@ -195,6 +195,18 @@ def is_private_ip(ip_str):
         return False
 
 
+def get_local_ip_addresses():
+    addresses = set()
+    try:
+        for addrs in psutil.net_if_addrs().values():
+            for addr in addrs:
+                if addr.family.name == "AF_INET":
+                    addresses.add(addr.address)
+    except Exception:
+        pass
+    return addresses
+
+
 def check_phone_connection():
     """
     检测手机是否连接
@@ -212,8 +224,7 @@ def check_phone_connection():
                             # 检查远程地址是否存在
                             if conn.raddr and len(conn.raddr) >= 1:
                                 remote_ip = conn.raddr[0]
-                                # 192.168.x.x (WiFi模式) 或 10.x.x.x (热点模式)，排除本机IP 10.161.156.1
-                                if (remote_ip.startswith('192.168.') or remote_ip.startswith('10.')) and not remote_ip.startswith('10.161.156.1'):
+                                if is_private_ip(remote_ip) and remote_ip not in get_local_ip_addresses():
                                     return True
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     # 进程已退出或无权限访问

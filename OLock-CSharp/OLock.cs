@@ -6,7 +6,12 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
+using System.IO;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -17,10 +22,8 @@ namespace OLock
     {
         // ================== 配置项 ==================
         const string APP_NAME = "OLock";
-        const string APP_PROCESS_NAME = "O+Connect";           // 主程序进程（检测网络连接）
-        const int CHECK_INTERVAL = 3;                          // 检测间隔（秒）
-        const int OFFLINE_THRESHOLD = 3;                       // 连续多少次离线才锁屏
-        const int WARMUP_TIME = 60;                            // 缓冲期时间（秒）
+        const string CONFIG_FILE_NAME = "olock.config.json";
+        static AppConfig config = AppConfig.CreateDefault();
         // ============================================
 
         // 全局状态
@@ -37,6 +40,74 @@ namespace OLock
 
         static bool autoSleep = false;
         static bool autoScreenOff = false;
+        static HashSet<string> localIpAddresses = new HashSet<string>();
+        static DateTime localIpAddressesLoadedAt = DateTime.MinValue;
+
+        class AppConfig
+        {
+            public string AppProcessName { get; set; }
+            public int CheckIntervalSeconds { get; set; }
+            public int OfflineThreshold { get; set; }
+            public int WarmupSeconds { get; set; }
+            public int MinWarmupSeconds { get; set; }
+            public int MaxWarmupSeconds { get; set; }
+            public string[] AllowedRemoteIpPrefixes { get; set; }
+            public string[] IgnoredRemoteIpPrefixes { get; set; }
+            public string SleepCommand { get; set; }
+            public string SleepArguments { get; set; }
+
+            public static AppConfig CreateDefault()
+            {
+                return new AppConfig
+                {
+                    AppProcessName = "O+Connect",
+                    CheckIntervalSeconds = 3,
+                    OfflineThreshold = 3,
+                    WarmupSeconds = 60,
+                    MinWarmupSeconds = 30,
+                    MaxWarmupSeconds = 600,
+                    AllowedRemoteIpPrefixes = new[] { "192.168.", "10." },
+                    IgnoredRemoteIpPrefixes = new string[0],
+                    SleepCommand = "rundll32.exe",
+                    SleepArguments = "powrprof.dll,SetSuspendState 0,1,0"
+                };
+            }
+
+            public void Normalize()
+            {
+                if (string.IsNullOrWhiteSpace(AppProcessName))
+                    AppProcessName = "O+Connect";
+
+                CheckIntervalSeconds = Clamp(CheckIntervalSeconds, 1, 60, 3);
+                OfflineThreshold = Clamp(OfflineThreshold, 1, 20, 3);
+                MinWarmupSeconds = Clamp(MinWarmupSeconds, 1, 3600, 30);
+                MaxWarmupSeconds = Clamp(MaxWarmupSeconds, MinWarmupSeconds, 3600, 600);
+                WarmupSeconds = Clamp(WarmupSeconds, MinWarmupSeconds, MaxWarmupSeconds, 60);
+
+                if (AllowedRemoteIpPrefixes == null || AllowedRemoteIpPrefixes.Length == 0)
+                    AllowedRemoteIpPrefixes = new[] { "192.168.", "10." };
+
+                if (IgnoredRemoteIpPrefixes == null)
+                    IgnoredRemoteIpPrefixes = new string[0];
+
+                if (string.IsNullOrWhiteSpace(SleepCommand))
+                    SleepCommand = "rundll32.exe";
+
+                if (SleepArguments == null)
+                    SleepArguments = string.Empty;
+            }
+
+            static int Clamp(int value, int min, int max, int fallback)
+            {
+                if (value <= 0)
+                    value = fallback;
+                if (value < min)
+                    return min;
+                if (value > max)
+                    return max;
+                return value;
+            }
+        }
 
         // Windows API
         [DllImport("user32.dll")]
@@ -121,9 +192,41 @@ namespace OLock
             }
         };
 
+        static AppConfig LoadAppConfig()
+        {
+            var loadedConfig = AppConfig.CreateDefault();
+            string configPath = Path.Combine(AppContext.BaseDirectory, CONFIG_FILE_NAME);
+
+            try
+            {
+                if (!File.Exists(configPath))
+                    configPath = Path.Combine(Environment.CurrentDirectory, CONFIG_FILE_NAME);
+
+                if (File.Exists(configPath))
+                {
+                    var options = new JsonSerializerOptions
+                    {
+                        PropertyNameCaseInsensitive = true,
+                        ReadCommentHandling = JsonCommentHandling.Skip,
+                        AllowTrailingCommas = true
+                    };
+
+                    AppConfig fileConfig = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(configPath), options);
+                    if (fileConfig != null)
+                        loadedConfig = fileConfig;
+                }
+            }
+            catch { }
+
+            loadedConfig.Normalize();
+            return loadedConfig;
+        }
+
         [STAThread]
         static void Main(string[] args)
         {
+            config = LoadAppConfig();
+
             // 隐藏控制台窗口
             var handle = GetConsoleWindow();
             if (handle != IntPtr.Zero)
@@ -306,12 +409,12 @@ namespace OLock
         static string GetStatusText()
         {
             if (isWaitingForApp)
-                return Tr("tray_waiting", APP_NAME, APP_PROCESS_NAME);
+                return Tr("tray_waiting", APP_NAME, config.AppProcessName);
             if (isWarmup)
                 return Tr("tray_warmup", APP_NAME, warmupRemaining);
             if (isOnline)
                 return Tr("tray_online", APP_NAME);
-            return Tr("tray_offline", APP_NAME, offlineCount, OFFLINE_THRESHOLD);
+            return Tr("tray_offline", APP_NAME, offlineCount, config.OfflineThreshold);
         }
 
         static void UpdateIcon()
@@ -342,25 +445,20 @@ namespace OLock
         {
             try
             {
-                var processes = Process.GetProcessesByName(APP_PROCESS_NAME);
+                var processes = Process.GetProcessesByName(config.AppProcessName);
                 return processes.Length > 0;
             }
             catch { return false; }
         }
 
-        /// <summary>
-        /// 检测手机是否连接
-        /// 遍历所有 O+Connect.exe 进程的网络连接
-        /// 如果存在 ESTABLISHED 状态且远程 IP 是 192.168.x.x 或 10.x.x.x，则判定手机在线
-        /// 完全按照 Python 版本的逻辑实现
-        /// </summary>
+        // Checks whether the configured process has an established connection
+        // to a configured remote IP prefix.
         static bool CheckPhoneConnection()
         {
             try
             {
-                // 只获取 O+Connect.exe 进程的 PID（与 Python 版本一致）
                 var pids = new HashSet<string>();
-                foreach (var proc in Process.GetProcessesByName(APP_PROCESS_NAME))
+                foreach (var proc in Process.GetProcessesByName(config.AppProcessName))
                 {
                     pids.Add(proc.Id.ToString());
                 }
@@ -389,7 +487,6 @@ namespace OLock
                         // 只处理 ESTABLISHED 连接
                         if (!line.Contains("ESTABLISHED")) continue;
 
-                        // 解析行: TCP    192.168.1.100:12345    192.168.1.1:5678    ESTABLISHED    1234
                         var parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
                         if (parts.Length < 5) continue;
 
@@ -403,12 +500,8 @@ namespace OLock
 
                         string remoteIP = remoteAddr.Substring(0, lastColon);
 
-                        // 检查是否是局域网IP (192.168.x.x 或 10.x.x.x)
-                        // 与 Python 版本完全一致的判断逻辑
-                        if (remoteIP.StartsWith("192.168.") || remoteIP.StartsWith("10."))
+                        if (HasAllowedRemoteIpPrefix(remoteIP))
                         {
-                            // 排除本机IP 10.161.156.1（与 Python 版本一致）
-                            if (remoteIP.StartsWith("10.161.156.1")) continue;
                             return true;
                         }
                     }
@@ -416,6 +509,70 @@ namespace OLock
             }
             catch { }
             return false;
+        }
+
+        static bool HasAllowedRemoteIpPrefix(string remoteIP)
+        {
+            if (string.IsNullOrWhiteSpace(remoteIP))
+                return false;
+
+            if (IsLocalIpAddress(remoteIP))
+                return false;
+
+            foreach (string ignoredPrefix in config.IgnoredRemoteIpPrefixes)
+            {
+                if (!string.IsNullOrWhiteSpace(ignoredPrefix) &&
+                    remoteIP.StartsWith(ignoredPrefix, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+
+            foreach (string allowedPrefix in config.AllowedRemoteIpPrefixes)
+            {
+                if (!string.IsNullOrWhiteSpace(allowedPrefix) &&
+                    remoteIP.StartsWith(allowedPrefix, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+
+        static bool IsLocalIpAddress(string ipAddress)
+        {
+            if (!IPAddress.TryParse(ipAddress, out IPAddress parsedAddress))
+                return false;
+
+            if (IPAddress.IsLoopback(parsedAddress))
+                return true;
+
+            return GetLocalIpAddresses().Contains(parsedAddress.ToString());
+        }
+
+        static HashSet<string> GetLocalIpAddresses()
+        {
+            if ((DateTime.UtcNow - localIpAddressesLoadedAt).TotalSeconds < 60 && localIpAddresses.Count > 0)
+                return localIpAddresses;
+
+            var addresses = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            try
+            {
+                foreach (NetworkInterface networkInterface in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (networkInterface.OperationalStatus != OperationalStatus.Up)
+                        continue;
+
+                    foreach (UnicastIPAddressInformation address in networkInterface.GetIPProperties().UnicastAddresses)
+                    {
+                        if (address.Address.AddressFamily == AddressFamily.InterNetwork)
+                            addresses.Add(address.Address.ToString());
+                    }
+                }
+            }
+            catch { }
+
+            localIpAddresses = addresses;
+            localIpAddressesLoadedAt = DateTime.UtcNow;
+            return localIpAddresses;
         }
 
         static void StartWaitingForApp()
@@ -436,7 +593,7 @@ namespace OLock
 
         static void StartWarmup()
         {
-            int warmupTime = Math.Max(30, Math.Min(600, WARMUP_TIME));
+            int warmupTime = Math.Max(config.MinWarmupSeconds, Math.Min(config.MaxWarmupSeconds, config.WarmupSeconds));
             isWarmup = true;
             isWaitingForApp = false;
             warmupRemaining = warmupTime;
@@ -523,8 +680,8 @@ namespace OLock
                             {
                                 // 缓冲期结束未连接，进入睡眠
                                 Process.Start(new ProcessStartInfo {
-                                    FileName = "rundll32.exe",
-                                    Arguments = "powrprof.dll,SetSuspendState 0,1,0",
+                                    FileName = config.SleepCommand,
+                                    Arguments = config.SleepArguments,
                                     CreateNoWindow = true,
                                     WindowStyle = ProcessWindowStyle.Hidden,
                                     UseShellExecute = false
@@ -561,14 +718,14 @@ namespace OLock
                     isOnline = false;
                     offlineCount++;
 
-                    if (offlineCount >= OFFLINE_THRESHOLD)
+                    if (offlineCount >= config.OfflineThreshold)
                     {
                         if (autoSleep)
                         {
                             // 检测到三次未连接到手机，直接进入睡眠模式
                             Process.Start(new ProcessStartInfo {
-                                FileName = "rundll32.exe",
-                                Arguments = "powrprof.dll,SetSuspendState 0,1,0",
+                                FileName = config.SleepCommand,
+                                Arguments = config.SleepArguments,
                                 CreateNoWindow = true,
                                 WindowStyle = ProcessWindowStyle.Hidden,
                                 UseShellExecute = false
@@ -590,7 +747,7 @@ namespace OLock
                 UpdateIcon();
 
                 // 等待下次检测
-                for (int i = 0; i < CHECK_INTERVAL * 10 && running; i++)
+                for (int i = 0; i < config.CheckIntervalSeconds * 10 && running; i++)
                     Thread.Sleep(100);
             }
         }

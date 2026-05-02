@@ -1,0 +1,35 @@
+# Build outputs
+bin/
+obj/
+build/
+publish/
+artifacts/
+
+# Release packages
+*.zip
+*.7z
+*.rar
+
+# .NET / Visual Studio local files
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+TestResults/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs and diagnostics
+*.log
+*.dmp
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/

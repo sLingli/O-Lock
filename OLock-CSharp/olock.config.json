@@ -1,0 +1,15 @@
+{
+  "appProcessName": "O+Connect",
+  "checkIntervalSeconds": 3,
+  "offlineThreshold": 3,
+  "warmupSeconds": 60,
+  "minWarmupSeconds": 30,
+  "maxWarmupSeconds": 600,
+  "allowedRemoteIpPrefixes": [
+    "192.168.",
+    "10."
+  ],
+  "ignoredRemoteIpPrefixes": [],
+  "sleepCommand": "rundll32.exe",
+  "sleepArguments": "powrprof.dll,SetSuspendState 0,1,0"
+}
