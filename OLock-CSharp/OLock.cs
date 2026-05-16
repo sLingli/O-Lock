@@ -533,6 +533,33 @@ namespace OLock
                     return true;
             }
 
+            // Fallback: any RFC 1918 private IP (not local) is treated as phone connection
+            if (IsPrivateIpAddress(remoteIP))
+                return true;
+
+            return false;
+        }
+
+        // RFC 1918 private IPv4 address check
+        static bool IsPrivateIpAddress(string ipStr)
+        {
+            if (!IPAddress.TryParse(ipStr, out IPAddress addr))
+                return false;
+
+            if (addr.AddressFamily != AddressFamily.InterNetwork)
+                return false;
+
+            byte[] bytes = addr.GetAddressBytes();
+            if (bytes.Length != 4)
+                return false;
+
+            // 10.0.0.0/8
+            if (bytes[0] == 10) return true;
+            // 172.16.0.0/12
+            if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) return true;
+            // 192.168.0.0/16
+            if (bytes[0] == 192 && bytes[1] == 168) return true;
+
             return false;
         }
 
