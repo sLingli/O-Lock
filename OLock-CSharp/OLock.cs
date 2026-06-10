@@ -26,6 +26,100 @@ namespace OLock
         static AppConfig config = AppConfig.CreateDefault();
         // ============================================
 
+        // 日志
+        static readonly object logLock = new object();
+        static string logFilePath;
+
+        static void InitLogger()
+        {
+            logFilePath = Path.Combine(AppContext.BaseDirectory, "olock.log");
+        }
+
+        static void Log(string level, string message)
+        {
+            if (logFilePath == null) return;
+            var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {level}: {message}";
+            lock (logLock)
+            {
+                try
+                {
+                    if (File.Exists(logFilePath) && new FileInfo(logFilePath).Length > 500 * 1024)
+                    {
+                        var content = File.ReadAllText(logFilePath);
+                        int start = Math.Max(0, content.Length - 200 * 1024);
+                        int nl = content.IndexOf('\n', start);
+                        if (nl >= 0) start = nl + 1;
+                        File.WriteAllText(logFilePath, content.Substring(start));
+                    }
+                    File.AppendAllText(logFilePath, line + Environment.NewLine);
+                }
+                catch { }
+            }
+        }
+
+        static void LogInfo(string msg) => Log("INFO", msg);
+        static void LogError(string msg) => Log("ERROR", msg);
+
+        static void ShowLogViewer()
+        {
+            var form = new Form
+            {
+                Text = $"{APP_NAME} Log",
+                Width = 720,
+                Height = 460,
+                StartPosition = FormStartPosition.CenterScreen,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                FormBorderStyle = FormBorderStyle.FixedDialog
+            };
+
+            var textBox = new TextBox
+            {
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Vertical,
+                Font = new Font("Consolas", 9f),
+                Dock = DockStyle.Top,
+                Height = 380,
+                WordWrap = false
+            };
+
+            var refreshBtn = new Button { Text = Tr("tray_log_refresh"), Width = 80, Left = 520, Top = 390 };
+            var clearBtn = new Button { Text = Tr("tray_log_clear"), Width = 80, Left = 610, Top = 390 };
+
+            Action loadLog = () =>
+            {
+                try
+                {
+                    if (File.Exists(logFilePath))
+                        textBox.Text = File.ReadAllText(logFilePath);
+                    else
+                        textBox.Text = Tr("tray_log_empty");
+                }
+                catch (Exception ex)
+                {
+                    textBox.Text = $"Error: {ex.Message}";
+                }
+            };
+
+            refreshBtn.Click += (s, e) => loadLog();
+            clearBtn.Click += (s, e) =>
+            {
+                try
+                {
+                    lock (logLock) { File.WriteAllText(logFilePath, string.Empty); }
+                    textBox.Clear();
+                }
+                catch { }
+            };
+
+            loadLog();
+            form.Controls.Add(textBox);
+            form.Controls.Add(refreshBtn);
+            form.Controls.Add(clearBtn);
+            form.Show();
+        }
+
         // 全局状态
         static volatile int offlineCount = 0;
         static volatile bool isOnline = false;
@@ -153,6 +247,10 @@ namespace OLock
                 ["tray_autosleep"] = "Sleep",
                 ["tray_autoscreenoff"] = "Turn off screen",
                 ["tray_quit"] = "Quit",
+                ["tray_log"] = "View log",
+                ["tray_log_refresh"] = "Refresh",
+                ["tray_log_clear"] = "Clear",
+                ["tray_log_empty"] = "(No log entries yet)",
                 ["tray_init"] = "{0}: Initializing..."
             },
             ["zh-Hans"] = new Dictionary<string, string>
@@ -165,6 +263,10 @@ namespace OLock
                 ["tray_autosleep"] = "睡眠",
                 ["tray_autoscreenoff"] = "关闭屏幕",
                 ["tray_quit"] = "退出",
+                ["tray_log"] = "查看日志",
+                ["tray_log_refresh"] = "刷新",
+                ["tray_log_clear"] = "清空",
+                ["tray_log_empty"] = "（暂无日志）",
                 ["tray_init"] = "{0}: 初始化中..."
             },
             ["zh-Hant"] = new Dictionary<string, string>
@@ -177,6 +279,10 @@ namespace OLock
                 ["tray_autosleep"] = "睡眠",
                 ["tray_autoscreenoff"] = "關閉螢幕",
                 ["tray_quit"] = "退出",
+                ["tray_log"] = "檢視日誌",
+                ["tray_log_refresh"] = "重新整理",
+                ["tray_log_clear"] = "清空",
+                ["tray_log_empty"] = "（暫無日誌）",
                 ["tray_init"] = "{0}: 初始化中..."
             }
         };
@@ -203,9 +309,17 @@ namespace OLock
                     AppConfig fileConfig = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(configPath), options);
                     if (fileConfig != null)
                         loadedConfig = fileConfig;
+                    LogInfo($"配置文件加载成功: {configPath}");
+                }
+                else
+                {
+                    LogInfo("配置文件不存在，使用默认配置");
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                LogError($"配置文件加载失败: {ex.Message}");
+            }
 
             loadedConfig.Normalize();
             return loadedConfig;
@@ -214,7 +328,9 @@ namespace OLock
         [STAThread]
         static void Main(string[] args)
         {
+            InitLogger();
             config = LoadAppConfig();
+            LogInfo($"{APP_NAME} 启动, 进程: {config.AppProcessName}, 语言: {currentLang}");
 
             // 隐藏控制台窗口
             var handle = GetConsoleWindow();
@@ -223,7 +339,9 @@ namespace OLock
 
             // 检测系统语言
             currentLang = GetUILanguage();
+            LogInfo($"系统语言: {currentLang}");
             LoadSettings();
+            LogInfo($"设置加载完成 - 自动睡眠: {autoSleep}, 自动关屏: {autoScreenOff}");
 
             // 初始化托盘图标
             Application.EnableVisualStyles();
@@ -312,6 +430,7 @@ namespace OLock
             {
                 ToggleAutostart();
                 autostartItem.Checked = IsAutostartEnabled();
+                LogInfo($"开机自启: {(autostartItem.Checked ? "开启" : "关闭")}");
             };
 
             var autoSleepItem = new ToolStripMenuItem(Tr("tray_autosleep"))
@@ -325,6 +444,7 @@ namespace OLock
                 if (autoSleep) autoScreenOff = false;
                 UpdateContextMenu();
                 SaveSettings();
+                LogInfo($"自动睡眠: {(autoSleep ? "开启" : "关闭")}");
             };
 
             var autoScreenOffItem = new ToolStripMenuItem(Tr("tray_autoscreenoff"))
@@ -338,11 +458,16 @@ namespace OLock
                 if (autoScreenOff) autoSleep = false;
                 UpdateContextMenu();
                 SaveSettings();
+                LogInfo($"自动关屏: {(autoScreenOff ? "开启" : "关闭")}");
             };
+
+            var logItem = new ToolStripMenuItem(Tr("tray_log"));
+            logItem.Click += (s, e) => ShowLogViewer();
 
             var quitItem = new ToolStripMenuItem(Tr("tray_quit"));
             quitItem.Click += (s, e) =>
             {
+                LogInfo("用户退出");
                 SystemEvents.PowerModeChanged -= OnPowerModeChanged;
                 running = false;
                 trayIcon.Visible = false;
@@ -352,6 +477,7 @@ namespace OLock
             menu.Items.Add(autostartItem);
             menu.Items.Add(autoSleepItem);
             menu.Items.Add(autoScreenOffItem);
+            menu.Items.Add(logItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(quitItem);
 
@@ -613,12 +739,14 @@ namespace OLock
             isWarmup = false;
             isOnline = false;
             offlineCount = 0;
+            LogInfo("状态: 等待应用启动");
         }
 
         static void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
         {
             if (e.Mode == PowerModes.Resume)
             {
+                LogInfo("系统唤醒 (S3 Resume)");
                 StartWaitingForApp();
             }
         }
@@ -631,11 +759,12 @@ namespace OLock
             warmupRemaining = warmupTime;
             offlineCount = 0;
             isOnline = false;
+            LogInfo($"状态: 缓冲期开始 ({warmupTime}秒)");
         }
 
         static void TriggerLock()
         {
-            // 正常执行锁屏
+            LogInfo("执行锁屏");
             LockWorkStation();
 
             if (autoScreenOff)
@@ -644,6 +773,7 @@ namespace OLock
                 Thread.Sleep(500);
                 // 关闭屏幕
                 SendMessage((IntPtr)HWND_BROADCAST, WM_SYSCOMMAND, (IntPtr)SC_MONITORPOWER, (IntPtr)MONITOR_OFF);
+                LogInfo("执行关闭屏幕");
             }
         }
 
@@ -661,6 +791,7 @@ namespace OLock
                     // 从锁定变为解锁
                     if (wasLocked && !currentlyLocked)
                     {
+                        LogInfo("屏幕解锁");
                         StartWaitingForApp();
                     }
 
@@ -702,6 +833,7 @@ namespace OLock
                             warmupRemaining = 0;
                             offlineCount = 0;
                             isOnline = true;
+                            LogInfo("状态: 手机已连接 (缓冲期内)");
                         }
                         else
                         {
@@ -710,9 +842,11 @@ namespace OLock
 
                             if (warmupRemaining <= 0)
                             {
+                                LogInfo("缓冲期超时，手机未连接");
                                 if (autoSleep)
                                 {
                                     // 缓冲期结束未连接，进入睡眠
+                                    LogInfo("执行睡眠命令");
                                     using (var proc = Process.Start(new ProcessStartInfo {
                                         FileName = config.SleepCommand,
                                         Arguments = config.SleepArguments,
@@ -747,19 +881,23 @@ namespace OLock
                     bool phoneConnected = CheckPhoneConnection();
                     if (phoneConnected)
                     {
+                        if (!isOnline) LogInfo("状态: 手机在线");
                         isOnline = true;
                         offlineCount = 0;
                     }
                     else
                     {
+                        if (isOnline) LogInfo("状态: 手机离线");
                         isOnline = false;
                         offlineCount++;
 
                         if (offlineCount >= config.OfflineThreshold)
                         {
+                            LogInfo($"连续 {offlineCount} 次未检测到手机");
                             if (autoSleep)
                             {
                                 // 检测到三次未连接到手机，直接进入睡眠模式
+                                LogInfo("执行睡眠命令");
                                 using (var proc = Process.Start(new ProcessStartInfo {
                                     FileName = config.SleepCommand,
                                     Arguments = config.SleepArguments,
@@ -792,7 +930,7 @@ namespace OLock
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine($"[OLock] MonitorLoop error: {ex.Message}");
+                    LogError($"MonitorLoop 异常: {ex.Message}");
                     Thread.Sleep(1000);
                 }
             }
