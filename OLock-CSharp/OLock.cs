@@ -27,19 +27,19 @@ namespace OLock
         // ============================================
 
         // 全局状态
-        static int offlineCount = 0;
-        static bool isOnline = false;
+        static volatile int offlineCount = 0;
+        static volatile bool isOnline = false;
         static volatile bool running = true;
         static NotifyIcon trayIcon;
         static Form messageForm;
-        static bool isWarmup = false;
-        static bool isWaitingForApp = true;
-        static int warmupRemaining = 0;
-        static bool wasLocked = false;
+        static volatile bool isWarmup = false;
+        static volatile bool isWaitingForApp = true;
+        static volatile int warmupRemaining = 0;
+        static volatile bool wasLocked = false;
         static string currentLang;
 
-        static bool autoSleep = false;
-        static bool autoScreenOff = false;
+        static volatile bool autoSleep = false;
+        static volatile bool autoScreenOff = false;
         static HashSet<string> localIpAddresses = new HashSet<string>();
         static DateTime localIpAddressesLoadedAt = DateTime.MinValue;
 
@@ -175,7 +175,7 @@ namespace OLock
                 ["tray_offline"] = "{0}: 🔴 未偵測到 ({1}/{2})",
                 ["tray_autostart"] = "開機自啟",
                 ["tray_autosleep"] = "睡眠",
-                ["tray_autoscreenoff"] = "关闭屏幕",
+                ["tray_autoscreenoff"] = "關閉螢幕",
                 ["tray_quit"] = "退出",
                 ["tray_init"] = "{0}: 初始化中..."
             }
@@ -616,12 +616,12 @@ namespace OLock
         }
 
         static void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
-{
-    if (e.Mode == PowerModes.Resume)
-    {
-        StartWaitingForApp();
-    }
-}
+        {
+            if (e.Mode == PowerModes.Resume)
+            {
+                StartWaitingForApp();
+            }
+        }
 
         static void StartWarmup()
         {
