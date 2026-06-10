@@ -113,15 +113,6 @@ namespace OLock
         [DllImport("user32.dll")]
         static extern IntPtr SendMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
 
-        [DllImport("user32.dll")]
-        static extern bool SendNotifyMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
-
-        [DllImport("user32.dll")]
-        static extern bool PostMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
-        
-        [DllImport("user32.dll")]
-        static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, uint dwExtraInfo);
-
         const int HWND_BROADCAST = 0xFFFF;
         const int WM_SYSCOMMAND = 0x0112;
         const int SC_MONITORPOWER = 0xF170;
@@ -147,11 +138,6 @@ namespace OLock
 
         [DllImport("user32.dll")]
         static extern bool DestroyIcon(IntPtr handle);
-
-        [DllImport("user32.dll")]
-        static extern void mouse_event(uint dwFlags, int dx, int dy, uint dwData, uint dwExtraInfo);
-
-        const uint MOUSEEVENTF_MOVE = 0x0001;
 
 
         // 多语言文本
