@@ -146,6 +146,9 @@ namespace OLock
         static extern ushort GetUserDefaultUILanguage();
 
         [DllImport("user32.dll")]
+        static extern bool DestroyIcon(IntPtr handle);
+
+        [DllImport("user32.dll")]
         static extern void mouse_event(uint dwFlags, int dx, int dy, uint dwData, uint dwExtraInfo);
 
         const uint MOUSEEVENTF_MOVE = 0x0001;
@@ -371,8 +374,10 @@ namespace OLock
 
         static void UpdateContextMenu()
         {
-            if (trayIcon != null)
-                trayIcon.ContextMenuStrip = CreateContextMenu();
+            if (trayIcon == null) return;
+            var oldMenu = trayIcon.ContextMenuStrip;
+            trayIcon.ContextMenuStrip = CreateContextMenu();
+            oldMenu?.Dispose();
         }
 
         static Icon CreateIcon(string state)
@@ -394,7 +399,12 @@ namespace OLock
                 {
                     g.FillEllipse(brush, 1, 1, 14, 14);
                 }
-                return Icon.FromHandle(bitmap.GetHicon());
+                IntPtr hIcon = bitmap.GetHicon();
+                var icon = Icon.FromHandle(hIcon);
+                var clonedIcon = (Icon)icon.Clone();
+                DestroyIcon(hIcon);
+                icon.Dispose();
+                return clonedIcon;
             }
         }
 
@@ -446,7 +456,15 @@ namespace OLock
             try
             {
                 var processes = Process.GetProcessesByName(config.AppProcessName);
-                return processes.Length > 0;
+                try
+                {
+                    return processes.Length > 0;
+                }
+                finally
+                {
+                    foreach (var p in processes)
+                        p.Dispose();
+                }
             }
             catch { return false; }
         }
@@ -460,7 +478,8 @@ namespace OLock
                 var pids = new HashSet<string>();
                 foreach (var proc in Process.GetProcessesByName(config.AppProcessName))
                 {
-                    pids.Add(proc.Id.ToString());
+                    try { pids.Add(proc.Id.ToString()); }
+                    finally { proc.Dispose(); }
                 }
 
                 if (pids.Count == 0) return false;
@@ -648,134 +667,148 @@ namespace OLock
 
             while (running)
             {
-                // 检测屏幕锁定状态
-                bool currentlyLocked = IsScreenLocked();
-
-                // 从锁定变为解锁
-                if (wasLocked && !currentlyLocked)
+                try
                 {
-                    StartWaitingForApp();
-                }
+                    // 检测屏幕锁定状态
+                    bool currentlyLocked = IsScreenLocked();
 
-                wasLocked = currentlyLocked;
-
-                // 屏幕锁定时暂停
-                if (currentlyLocked)
-                {
-                    Thread.Sleep(1000);
-                    continue;
-                }
-
-                // 阶段1: 等待主程序启动 (灰色)
-                if (isWaitingForApp)
-                {
-                    if (IsAppRunning())
-                        StartWarmup();
-                    else
+                    // 从锁定变为解锁
+                    if (wasLocked && !currentlyLocked)
                     {
-                        UpdateIcon();
+                        StartWaitingForApp();
+                    }
+
+                    wasLocked = currentlyLocked;
+
+                    // 屏幕锁定时暂停
+                    if (currentlyLocked)
+                    {
                         Thread.Sleep(1000);
                         continue;
                     }
-                }
 
-                // 阶段2: 缓冲期 (黄色)
-                if (isWarmup)
-                {
+                    // 阶段1: 等待主程序启动 (灰色)
+                    if (isWaitingForApp)
+                    {
+                        if (IsAppRunning())
+                            StartWarmup();
+                        else
+                        {
+                            UpdateIcon();
+                            Thread.Sleep(1000);
+                            continue;
+                        }
+                    }
+
+                    // 阶段2: 缓冲期 (黄色)
+                    if (isWarmup)
+                    {
+                        if (!IsAppRunning())
+                        {
+                            StartWaitingForApp();
+                            continue;
+                        }
+
+                        bool connected = CheckPhoneConnection();
+                        if (connected)
+                        {
+                            isWarmup = false;
+                            warmupRemaining = 0;
+                            offlineCount = 0;
+                            isOnline = true;
+                        }
+                        else
+                        {
+                            warmupRemaining--;
+                            UpdateIcon();
+
+                            if (warmupRemaining <= 0)
+                            {
+                                if (autoSleep)
+                                {
+                                    // 缓冲期结束未连接，进入睡眠
+                                    using (var proc = Process.Start(new ProcessStartInfo {
+                                        FileName = config.SleepCommand,
+                                        Arguments = config.SleepArguments,
+                                        CreateNoWindow = true,
+                                        WindowStyle = ProcessWindowStyle.Hidden,
+                                        UseShellExecute = false
+                                    }))
+                                    {
+                                        proc?.WaitForExit(5000);
+                                    }
+                                }
+                                else
+                                {
+                                    TriggerLock();
+                                }
+                                Thread.Sleep(1000);
+                                continue;
+                            }
+                            Thread.Sleep(1000);
+                            continue;
+                        }
+                    }
+
+                    // 阶段3: 正常监控 (绿色/红色)
                     if (!IsAppRunning())
                     {
                         StartWaitingForApp();
+                        UpdateIcon();
                         continue;
                     }
 
-                    bool connected = CheckPhoneConnection();
-                    if (connected)
+                    bool phoneConnected = CheckPhoneConnection();
+                    if (phoneConnected)
                     {
-                        isWarmup = false;
-                        warmupRemaining = 0;
-                        offlineCount = 0;
                         isOnline = true;
+                        offlineCount = 0;
                     }
                     else
                     {
-                        warmupRemaining--;
-                        UpdateIcon();
+                        isOnline = false;
+                        offlineCount++;
 
-                        if (warmupRemaining <= 0)
+                        if (offlineCount >= config.OfflineThreshold)
                         {
                             if (autoSleep)
                             {
-                                // 缓冲期结束未连接，进入睡眠
-                                Process.Start(new ProcessStartInfo {
+                                // 检测到三次未连接到手机，直接进入睡眠模式
+                                using (var proc = Process.Start(new ProcessStartInfo {
                                     FileName = config.SleepCommand,
                                     Arguments = config.SleepArguments,
                                     CreateNoWindow = true,
                                     WindowStyle = ProcessWindowStyle.Hidden,
                                     UseShellExecute = false
-                                });
+                                }))
+                                {
+                                    proc?.WaitForExit(5000);
+                                }
+                            }
+                            else if (autoScreenOff)
+                            {
+                                // 锁屏并关屏
+                                TriggerLock();
                             }
                             else
                             {
                                 TriggerLock();
                             }
-                            Thread.Sleep(1000);
-                            continue;
+                            offlineCount = 0;
                         }
-                        Thread.Sleep(1000);
-                        continue;
                     }
-                }
 
-                // 阶段3: 正常监控 (绿色/红色)
-                if (!IsAppRunning())
-                {
-                    StartWaitingForApp();
                     UpdateIcon();
-                    continue;
-                }
 
-                bool phoneConnected = CheckPhoneConnection();
-                if (phoneConnected)
+                    // 等待下次检测
+                    for (int i = 0; i < config.CheckIntervalSeconds * 10 && running; i++)
+                        Thread.Sleep(100);
+                }
+                catch (Exception ex)
                 {
-                    isOnline = true;
-                    offlineCount = 0;
+                    System.Diagnostics.Debug.WriteLine($"[OLock] MonitorLoop error: {ex.Message}");
+                    Thread.Sleep(1000);
                 }
-                else
-                {
-                    isOnline = false;
-                    offlineCount++;
-
-                    if (offlineCount >= config.OfflineThreshold)
-                    {
-                        if (autoSleep)
-                        {
-                            // 检测到三次未连接到手机，直接进入睡眠模式
-                            Process.Start(new ProcessStartInfo {
-                                FileName = config.SleepCommand,
-                                Arguments = config.SleepArguments,
-                                CreateNoWindow = true,
-                                WindowStyle = ProcessWindowStyle.Hidden,
-                                UseShellExecute = false
-                            });
-                        }
-                        else if (autoScreenOff)
-                        {
-                            // 锁屏并关屏
-                            TriggerLock();
-                        }
-                        else
-                        {
-                            TriggerLock();
-                        }
-                        offlineCount = 0;
-                    }
-                }
-
-                UpdateIcon();
-
-                // 等待下次检测
-                for (int i = 0; i < config.CheckIntervalSeconds * 10 && running; i++)
-                    Thread.Sleep(100);
             }
         }
 
