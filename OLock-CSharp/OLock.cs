@@ -13,6 +13,7 @@ using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -121,19 +122,23 @@ namespace OLock
         }
 
         // 全局状态
-        static volatile int offlineCount = 0;
-        static volatile bool isOnline = false;
-        static volatile bool running = true;
+        static int offlineCount = 0;
+        static bool isOnline = false;
         static NotifyIcon trayIcon;
         static Form messageForm;
-        static volatile bool isWarmup = false;
-        static volatile bool isWaitingForApp = true;
-        static volatile int warmupRemaining = 0;
-        static volatile bool wasLocked = false;
+        static bool isWarmup = false;
+        static bool isWaitingForApp = true;
+        static int warmupRemaining = 0;
+        static bool wasLocked = false;
         static string currentLang;
 
-        static volatile bool autoSleep = false;
-        static volatile bool autoScreenOff = false;
+        // 定时器 (替代后台线程)
+        static System.Windows.Forms.Timer monitorTimer;
+        static int elapsedTicks = 0;       // 自上次 netstat 检查以来的 tick 数
+        static bool isChecking = false;    // 防止并发执行 netstat 检查
+
+        static bool autoSleep = false;
+        static bool autoScreenOff = false;
         static HashSet<string> localIpAddresses = new HashSet<string>();
         static DateTime localIpAddressesLoadedAt = DateTime.MinValue;
 
@@ -211,7 +216,7 @@ namespace OLock
         const int WM_SYSCOMMAND = 0x0112;
         const int SC_MONITORPOWER = 0xF170;
         const int MONITOR_OFF = 2;
-        
+
         [DllImport("kernel32.dll")]
         static extern IntPtr GetConsoleWindow();
 
@@ -350,9 +355,11 @@ namespace OLock
             // 监听系统电源事件 (S3唤醒)
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
 
-            // 启动监控线程
-            var monitorThread = new Thread(MonitorLoop) { IsBackground = true };
-            monitorThread.Start();
+            // 启动监控定时器 (UI 线程，1秒一跳)
+            monitorTimer = new System.Windows.Forms.Timer();
+            monitorTimer.Interval = 1000;
+            monitorTimer.Tick += MonitorTick;
+            StartWaitingForApp();
 
             // 运行消息循环
             Application.Run();
@@ -405,8 +412,8 @@ namespace OLock
                 Opacity = 0
             };
             // 强制创建句柄，以便接收消息
-            var h = messageForm.Handle; 
-            
+            var h = messageForm.Handle;
+
             messageForm.Load += (s, e) => messageForm.Visible = false;
 
             trayIcon = new NotifyIcon
@@ -469,7 +476,8 @@ namespace OLock
             {
                 LogInfo("用户退出");
                 SystemEvents.PowerModeChanged -= OnPowerModeChanged;
-                running = false;
+                monitorTimer?.Stop();
+                monitorTimer?.Dispose();
                 trayIcon.Visible = false;
                 Application.Exit();
             };
@@ -539,6 +547,7 @@ namespace OLock
             return Tr("tray_offline", APP_NAME, offlineCount, config.OfflineThreshold);
         }
 
+        // UpdateIcon 现在只在 UI 线程上调用 (由 Timer Tick 触发)，不再有跨线程问题
         static void UpdateIcon()
         {
             if (trayIcon == null) return;
@@ -563,6 +572,8 @@ namespace OLock
             return true;
         }
 
+        // 以下两个方法在后台线程上通过 Task.Run 执行，结果通过回调返回 UI 线程
+
         static bool IsAppRunning()
         {
             try
@@ -583,6 +594,7 @@ namespace OLock
 
         // Checks whether the configured process has an established connection
         // to a configured remote IP prefix.
+        // 在后台线程执行，带超时保护
         static bool CheckPhoneConnection()
         {
             try
@@ -596,7 +608,7 @@ namespace OLock
 
                 if (pids.Count == 0) return false;
 
-                // 执行 netstat -ano 命令
+                // 执行 netstat -ano 命令 (带超时保护)
                 var psi = new ProcessStartInfo
                 {
                     FileName = "netstat",
@@ -608,8 +620,15 @@ namespace OLock
 
                 using (var process = Process.Start(psi))
                 {
-                    string output = process.StandardOutput.ReadToEnd();
-                    process.WaitForExit();
+                    // 异步读取 stdout，带 10 秒超时
+                    var readTask = process.StandardOutput.ReadToEndAsync();
+                    if (!readTask.Wait(TimeSpan.FromSeconds(10)))
+                    {
+                        try { process.Kill(); } catch { }
+                        return false; // 超时视为未检测到
+                    }
+
+                    string output = readTask.Result;
 
                     // 逐行解析 netstat 输出
                     var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
@@ -733,13 +752,22 @@ namespace OLock
             return localIpAddresses;
         }
 
+        // ==================== 状态管理 (均在 UI 线程执行) ====================
+
         static void StartWaitingForApp()
         {
             isWaitingForApp = true;
             isWarmup = false;
             isOnline = false;
             offlineCount = 0;
+            elapsedTicks = 0;
+            isChecking = false;
             LogInfo("状态: 等待应用启动");
+            UpdateIcon();
+
+            // 确保定时器在运行
+            if (monitorTimer != null && !monitorTimer.Enabled)
+                monitorTimer.Start();
         }
 
         static void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
@@ -759,7 +787,10 @@ namespace OLock
             warmupRemaining = warmupTime;
             offlineCount = 0;
             isOnline = false;
+            elapsedTicks = 0;
+            isChecking = false;
             LogInfo($"状态: 缓冲期开始 ({warmupTime}秒)");
+            UpdateIcon();
         }
 
         static void TriggerLock()
@@ -769,170 +800,215 @@ namespace OLock
 
             if (autoScreenOff)
             {
-                // 延迟一会确保锁屏界面已加载
-                Thread.Sleep(500);
-                // 关闭屏幕
-                SendMessage((IntPtr)HWND_BROADCAST, WM_SYSCOMMAND, (IntPtr)SC_MONITORPOWER, (IntPtr)MONITOR_OFF);
-                LogInfo("执行关闭屏幕");
+                // 在后台线程延迟后关屏，避免阻塞 UI
+                Task.Run(() =>
+                {
+                    Thread.Sleep(500);
+                    SendMessage((IntPtr)HWND_BROADCAST, WM_SYSCOMMAND, (IntPtr)SC_MONITORPOWER, (IntPtr)MONITOR_OFF);
+                    LogInfo("执行关闭屏幕");
+                });
             }
         }
 
-        static void MonitorLoop()
+        static void ExecuteSleep()
         {
-            StartWaitingForApp();
-
-            while (running)
+            LogInfo("执行睡眠命令");
+            // 在后台线程执行，避免阻塞 UI
+            Task.Run(() =>
             {
                 try
                 {
-                    // 检测屏幕锁定状态
-                    bool currentlyLocked = IsScreenLocked();
-
-                    // 从锁定变为解锁
-                    if (wasLocked && !currentlyLocked)
+                    using (var proc = Process.Start(new ProcessStartInfo {
+                        FileName = config.SleepCommand,
+                        Arguments = config.SleepArguments,
+                        CreateNoWindow = true,
+                        WindowStyle = ProcessWindowStyle.Hidden,
+                        UseShellExecute = false
+                    }))
                     {
-                        LogInfo("屏幕解锁");
-                        StartWaitingForApp();
+                        proc?.WaitForExit(5000);
                     }
-
-                    wasLocked = currentlyLocked;
-
-                    // 屏幕锁定时暂停
-                    if (currentlyLocked)
-                    {
-                        Thread.Sleep(1000);
-                        continue;
-                    }
-
-                    // 阶段1: 等待主程序启动 (灰色)
-                    if (isWaitingForApp)
-                    {
-                        if (IsAppRunning())
-                            StartWarmup();
-                        else
-                        {
-                            UpdateIcon();
-                            Thread.Sleep(1000);
-                            continue;
-                        }
-                    }
-
-                    // 阶段2: 缓冲期 (黄色)
-                    if (isWarmup)
-                    {
-                        if (!IsAppRunning())
-                        {
-                            StartWaitingForApp();
-                            continue;
-                        }
-
-                        bool connected = CheckPhoneConnection();
-                        if (connected)
-                        {
-                            isWarmup = false;
-                            warmupRemaining = 0;
-                            offlineCount = 0;
-                            isOnline = true;
-                            LogInfo("状态: 手机已连接 (缓冲期内)");
-                        }
-                        else
-                        {
-                            warmupRemaining--;
-                            UpdateIcon();
-
-                            if (warmupRemaining <= 0)
-                            {
-                                LogInfo("缓冲期超时，手机未连接");
-                                if (autoSleep)
-                                {
-                                    // 缓冲期结束未连接，进入睡眠
-                                    LogInfo("执行睡眠命令");
-                                    using (var proc = Process.Start(new ProcessStartInfo {
-                                        FileName = config.SleepCommand,
-                                        Arguments = config.SleepArguments,
-                                        CreateNoWindow = true,
-                                        WindowStyle = ProcessWindowStyle.Hidden,
-                                        UseShellExecute = false
-                                    }))
-                                    {
-                                        proc?.WaitForExit(5000);
-                                    }
-                                }
-                                else
-                                {
-                                    TriggerLock();
-                                }
-                                Thread.Sleep(1000);
-                                continue;
-                            }
-                            Thread.Sleep(1000);
-                            continue;
-                        }
-                    }
-
-                    // 阶段3: 正常监控 (绿色/红色)
-                    if (!IsAppRunning())
-                    {
-                        StartWaitingForApp();
-                        UpdateIcon();
-                        continue;
-                    }
-
-                    bool phoneConnected = CheckPhoneConnection();
-                    if (phoneConnected)
-                    {
-                        if (!isOnline) LogInfo("状态: 手机在线");
-                        isOnline = true;
-                        offlineCount = 0;
-                    }
-                    else
-                    {
-                        if (isOnline) LogInfo("状态: 手机离线");
-                        isOnline = false;
-                        offlineCount++;
-
-                        if (offlineCount >= config.OfflineThreshold)
-                        {
-                            LogInfo($"连续 {offlineCount} 次未检测到手机");
-                            if (autoSleep)
-                            {
-                                // 检测到三次未连接到手机，直接进入睡眠模式
-                                LogInfo("执行睡眠命令");
-                                using (var proc = Process.Start(new ProcessStartInfo {
-                                    FileName = config.SleepCommand,
-                                    Arguments = config.SleepArguments,
-                                    CreateNoWindow = true,
-                                    WindowStyle = ProcessWindowStyle.Hidden,
-                                    UseShellExecute = false
-                                }))
-                                {
-                                    proc?.WaitForExit(5000);
-                                }
-                            }
-                            else if (autoScreenOff)
-                            {
-                                // 锁屏并关屏
-                                TriggerLock();
-                            }
-                            else
-                            {
-                                TriggerLock();
-                            }
-                            offlineCount = 0;
-                        }
-                    }
-
-                    UpdateIcon();
-
-                    // 等待下次检测
-                    for (int i = 0; i < config.CheckIntervalSeconds * 10 && running; i++)
-                        Thread.Sleep(100);
                 }
                 catch (Exception ex)
                 {
-                    LogError($"MonitorLoop 异常: {ex.Message}");
-                    Thread.Sleep(1000);
+                    LogError($"睡眠命令执行失败: {ex.Message}");
                 }
+            });
+        }
+
+        // ==================== 核心：定时器驱动的监控逻辑 ====================
+
+        // MonitorTick 在 UI 线程上由 Forms.Timer 触发 (每 1 秒)
+        // 所有 UI 操作 (UpdateIcon) 天然在 UI 线程上，无跨线程问题
+        // 阻塞 I/O (IsAppRunning, CheckPhoneConnection) 通过 Task.Run 在后台执行
+        static void MonitorTick(object sender, EventArgs e)
+        {
+            try
+            {
+                // 1. 检测屏幕锁定状态 (非阻塞 API 调用)
+                bool currentlyLocked = IsScreenLocked();
+
+                // 从锁定变为解锁
+                if (wasLocked && !currentlyLocked)
+                {
+                    LogInfo("屏幕解锁");
+                    StartWaitingForApp();
+                    return; // StartWaitingForApp 已更新图标
+                }
+
+                wasLocked = currentlyLocked;
+
+                // 屏幕锁定时暂停监控
+                if (currentlyLocked)
+                    return;
+
+                // 2. 等待主程序启动阶段 (灰色)
+                if (isWaitingForApp)
+                {
+                    if (IsAppRunning())
+                    {
+                        StartWarmup();
+                    }
+                    else
+                    {
+                        UpdateIcon();
+                    }
+                    return;
+                }
+
+                // 3. 缓冲期阶段 (黄色)
+                if (isWarmup)
+                {
+                    // IsAppRunning 在缓冲期可以同步调用 (只检查进程名，很快)
+                    if (!IsAppRunning())
+                    {
+                        StartWaitingForApp();
+                        return;
+                    }
+
+                    // 按配置的间隔执行手机连接检查 (与正常监控阶段一致)
+                    elapsedTicks++;
+                    if (elapsedTicks < config.CheckIntervalSeconds)
+                        return;
+                    elapsedTicks = 0;
+
+                    if (!isChecking)
+                    {
+                        isChecking = true;
+                        Task.Run(() =>
+                        {
+                            try { return CheckPhoneConnection(); }
+                            catch { return false; }
+                        }).ContinueWith(task =>
+                        {
+                            // 回到 UI 线程处理结果
+                            try
+                            {
+                                bool connected = task.IsCompleted ? task.Result : false;
+
+                                if (connected)
+                                {
+                                    isWarmup = false;
+                                    warmupRemaining = 0;
+                                    offlineCount = 0;
+                                    isOnline = true;
+                                    elapsedTicks = 0;
+                                    LogInfo("状态: 手机已连接 (缓冲期内)");
+                                }
+                                else
+                                {
+                                    warmupRemaining--;
+                                    if (warmupRemaining <= 0)
+                                    {
+                                        LogInfo("缓冲期超时，手机未连接");
+                                        if (autoSleep)
+                                            ExecuteSleep();
+                                        else
+                                            TriggerLock();
+                                        StartWaitingForApp();
+                                        return;
+                                    }
+                                }
+                                isChecking = false;
+                                UpdateIcon();
+                            }
+                            catch (Exception ex)
+                            {
+                                LogError($"缓冲期检查回调异常: {ex.Message}");
+                                isChecking = false;
+                            }
+                        }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.FromCurrentSynchronizationContext());
+                    }
+                    return;
+                }
+
+                // 4. 正常监控阶段 (绿色/红色)
+                if (!IsAppRunning())
+                {
+                    StartWaitingForApp();
+                    UpdateIcon();
+                    return;
+                }
+
+                elapsedTicks++;
+
+                // 按配置的间隔执行手机连接检查
+                if (elapsedTicks >= config.CheckIntervalSeconds)
+                {
+                    elapsedTicks = 0;
+
+                    if (!isChecking)
+                    {
+                        isChecking = true;
+                        Task.Run(() =>
+                        {
+                            try { return CheckPhoneConnection(); }
+                            catch { return false; }
+                        }).ContinueWith(task =>
+                        {
+                            // 回到 UI 线程处理结果
+                            try
+                            {
+                                bool phoneConnected = task.IsCompleted ? task.Result : false;
+
+                                if (phoneConnected)
+                                {
+                                    if (!isOnline) LogInfo("状态: 手机在线");
+                                    isOnline = true;
+                                    offlineCount = 0;
+                                }
+                                else
+                                {
+                                    if (isOnline) LogInfo("状态: 手机离线");
+                                    isOnline = false;
+                                    offlineCount++;
+
+                                    if (offlineCount >= config.OfflineThreshold)
+                                    {
+                                        LogInfo($"连续 {offlineCount} 次未检测到手机");
+                                        if (autoSleep)
+                                            ExecuteSleep();
+                                        else
+                                            TriggerLock();
+                                        offlineCount = 0;
+                                    }
+                                }
+
+                                isChecking = false;
+                                UpdateIcon();
+                            }
+                            catch (Exception ex)
+                            {
+                                LogError($"监控检查回调异常: {ex.Message}");
+                                isChecking = false;
+                            }
+                        }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.FromCurrentSynchronizationContext());
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"MonitorTick 异常: {ex.Message}");
             }
         }
 
