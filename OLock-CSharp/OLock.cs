@@ -136,6 +136,8 @@ namespace OLock
         static System.Windows.Forms.Timer monitorTimer;
         static int elapsedTicks = 0;       // 自上次 netstat 检查以来的 tick 数
         static bool isChecking = false;    // 防止并发执行 netstat 检查
+        static int checkGeneration = 0;    // 异步检查代次号，状态重置时递增
+        static DateTime isCheckingSince = DateTime.MinValue; // isChecking 开始时间
 
         static bool autoSleep = false;
         static bool autoScreenOff = false;
@@ -762,6 +764,7 @@ namespace OLock
             offlineCount = 0;
             elapsedTicks = 0;
             isChecking = false;
+            checkGeneration++;  // 使旧的异步回调失效
             LogInfo("状态: 等待应用启动");
             UpdateIcon();
 
@@ -789,6 +792,7 @@ namespace OLock
             isOnline = false;
             elapsedTicks = 0;
             isChecking = false;
+            checkGeneration++;  // 使旧的异步回调失效
             LogInfo($"状态: 缓冲期开始 ({warmupTime}秒)");
             UpdateIcon();
         }
@@ -861,7 +865,17 @@ namespace OLock
 
                 // 屏幕锁定时暂停监控
                 if (currentlyLocked)
+                {
+                    if (isChecking) isChecking = false; // 锁屏时强制重置，避免解锁后卡死
                     return;
+                }
+
+                // isChecking 超时保护 (30秒)
+                if (isChecking && (DateTime.Now - isCheckingSince).TotalSeconds > 30)
+                {
+                    LogError("isChecking 超时，强制重置");
+                    isChecking = false;
+                }
 
                 // 2. 等待主程序启动阶段 (灰色)
                 if (isWaitingForApp)
@@ -896,6 +910,8 @@ namespace OLock
                     if (!isChecking)
                     {
                         isChecking = true;
+                        isCheckingSince = DateTime.Now;
+                        int gen = checkGeneration;
                         Task.Run(() =>
                         {
                             try { return CheckPhoneConnection(); }
@@ -905,6 +921,9 @@ namespace OLock
                             // 回到 UI 线程处理结果
                             try
                             {
+                                isChecking = false;
+                                if (gen != checkGeneration) return; // 状态已重置，丢弃旧结果
+
                                 bool connected = task.IsCompleted ? task.Result : false;
 
                                 if (connected)
@@ -930,7 +949,6 @@ namespace OLock
                                         return;
                                     }
                                 }
-                                isChecking = false;
                                 UpdateIcon();
                             }
                             catch (Exception ex)
@@ -961,6 +979,8 @@ namespace OLock
                     if (!isChecking)
                     {
                         isChecking = true;
+                        isCheckingSince = DateTime.Now;
+                        int gen = checkGeneration;
                         Task.Run(() =>
                         {
                             try { return CheckPhoneConnection(); }
@@ -970,6 +990,9 @@ namespace OLock
                             // 回到 UI 线程处理结果
                             try
                             {
+                                isChecking = false;
+                                if (gen != checkGeneration) return; // 状态已重置，丢弃旧结果
+
                                 bool phoneConnected = task.IsCompleted ? task.Result : false;
 
                                 if (phoneConnected)
@@ -995,7 +1018,6 @@ namespace OLock
                                     }
                                 }
 
-                                isChecking = false;
                                 UpdateIcon();
                             }
                             catch (Exception ex)
