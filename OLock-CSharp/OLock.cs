@@ -851,6 +851,7 @@ namespace OLock
                 // 从锁定变为解锁
                 if (wasLocked && !currentlyLocked)
                 {
+                    wasLocked = false;
                     LogInfo("屏幕解锁");
                     StartWaitingForApp();
                     return; // StartWaitingForApp 已更新图标
