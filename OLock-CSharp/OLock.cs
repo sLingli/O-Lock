@@ -121,6 +121,96 @@ namespace OLock
             form.Show();
         }
 
+        static void ShowSettingsWindow()
+        {
+            var form = new Form
+            {
+                Text = Tr("tray_settings"),
+                Width = 480,
+                Height = 420,
+                StartPosition = FormStartPosition.CenterScreen,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                FormBorderStyle = FormBorderStyle.FixedDialog
+            };
+
+            int y = 15, labelW = 120, inputX = 140, inputW = 300;
+
+            // 监控进程名
+            form.Controls.Add(new Label { Text = "进程名", Left = 10, Top = y + 3, Width = labelW });
+            var txtProcess = new TextBox { Left = inputX, Top = y, Width = inputW, Text = config.AppProcessName };
+            form.Controls.Add(txtProcess);
+            y += 32;
+
+            // 检测间隔
+            form.Controls.Add(new Label { Text = "检测间隔 (秒)", Left = 10, Top = y + 3, Width = labelW });
+            var numInterval = new NumericUpDown { Left = inputX, Top = y, Width = inputW, Minimum = 1, Maximum = 60, Value = config.CheckIntervalSeconds };
+            form.Controls.Add(numInterval);
+            y += 32;
+
+            // 离线阈值
+            form.Controls.Add(new Label { Text = "离线阈值 (次)", Left = 10, Top = y + 3, Width = labelW });
+            var numThreshold = new NumericUpDown { Left = inputX, Top = y, Width = inputW, Minimum = 1, Maximum = 20, Value = config.OfflineThreshold };
+            form.Controls.Add(numThreshold);
+            y += 32;
+
+            // 缓冲期
+            form.Controls.Add(new Label { Text = "缓冲期 (秒)", Left = 10, Top = y + 3, Width = labelW });
+            var numWarmup = new NumericUpDown { Left = inputX, Top = y, Width = inputW, Minimum = 1, Maximum = 3600, Value = config.WarmupSeconds };
+            form.Controls.Add(numWarmup);
+            y += 32;
+
+            // 允许的 IP 前缀
+            form.Controls.Add(new Label { Text = "允许 IP 前缀", Left = 10, Top = y + 3, Width = labelW });
+            var txtAllowed = new TextBox { Left = inputX, Top = y, Width = inputW, Text = string.Join(",", config.AllowedRemoteIpPrefixes) };
+            form.Controls.Add(txtAllowed);
+            y += 32;
+
+            // 忽略的 IP 前缀
+            form.Controls.Add(new Label { Text = "忽略 IP 前缀", Left = 10, Top = y + 3, Width = labelW });
+            var txtIgnored = new TextBox { Left = inputX, Top = y, Width = inputW, Text = string.Join(",", config.IgnoredRemoteIpPrefixes) };
+            form.Controls.Add(txtIgnored);
+            y += 32;
+
+            // 睡眠命令
+            form.Controls.Add(new Label { Text = "睡眠命令", Left = 10, Top = y + 3, Width = labelW });
+            var txtSleepCmd = new TextBox { Left = inputX, Top = y, Width = inputW, Text = config.SleepCommand };
+            form.Controls.Add(txtSleepCmd);
+            y += 32;
+
+            // 睡眠参数
+            form.Controls.Add(new Label { Text = "睡眠参数", Left = 10, Top = y + 3, Width = labelW });
+            var txtSleepArgs = new TextBox { Left = inputX, Top = y, Width = inputW, Text = config.SleepArguments };
+            form.Controls.Add(txtSleepArgs);
+            y += 40;
+
+            // 按钮
+            var saveBtn = new Button { Text = "保存", Width = 80, Left = inputX + inputW - 170, Top = y };
+            var cancelBtn = new Button { Text = "取消", Width = 80, Left = inputX + inputW - 80, Top = y };
+
+            saveBtn.Click += (s, e) =>
+            {
+                config.AppProcessName = txtProcess.Text.Trim();
+                config.CheckIntervalSeconds = (int)numInterval.Value;
+                config.OfflineThreshold = (int)numThreshold.Value;
+                config.WarmupSeconds = (int)numWarmup.Value;
+                config.AllowedRemoteIpPrefixes = txtAllowed.Text.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                config.IgnoredRemoteIpPrefixes = txtIgnored.Text.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                config.SleepCommand = txtSleepCmd.Text.Trim();
+                config.SleepArguments = txtSleepArgs.Text;
+                config.Normalize();
+                SaveSettings();
+                LogInfo("设置已保存");
+                form.Close();
+            };
+
+            cancelBtn.Click += (s, e) => form.Close();
+
+            form.Controls.Add(saveBtn);
+            form.Controls.Add(cancelBtn);
+            form.Show();
+        }
+
         // 全局状态
         static int offlineCount = 0;
         static bool isOnline = false;
@@ -253,6 +343,7 @@ namespace OLock
                 ["tray_autostart"] = "Start with Windows",
                 ["tray_autosleep"] = "Sleep",
                 ["tray_autoscreenoff"] = "Turn off screen",
+                ["tray_settings"] = "Settings",
                 ["tray_quit"] = "Quit",
                 ["tray_log"] = "View log",
                 ["tray_log_refresh"] = "Refresh",
@@ -269,6 +360,7 @@ namespace OLock
                 ["tray_autostart"] = "开机自启",
                 ["tray_autosleep"] = "睡眠",
                 ["tray_autoscreenoff"] = "关闭屏幕",
+                ["tray_settings"] = "设置",
                 ["tray_quit"] = "退出",
                 ["tray_log"] = "查看日志",
                 ["tray_log_refresh"] = "刷新",
@@ -285,6 +377,7 @@ namespace OLock
                 ["tray_autostart"] = "開機自啟",
                 ["tray_autosleep"] = "睡眠",
                 ["tray_autoscreenoff"] = "關閉螢幕",
+                ["tray_settings"] = "設定",
                 ["tray_quit"] = "退出",
                 ["tray_log"] = "檢視日誌",
                 ["tray_log_refresh"] = "重新整理",
@@ -294,11 +387,10 @@ namespace OLock
             }
         };
 
-        static AppConfig LoadAppConfig()
+        // 如果存在 JSON 配置文件则加载覆盖，返回 true 表示已加载
+        static bool LoadJsonConfigIfExists()
         {
-            var loadedConfig = AppConfig.CreateDefault();
             string configPath = Path.Combine(AppContext.BaseDirectory, CONFIG_FILE_NAME);
-
             try
             {
                 if (!File.Exists(configPath))
@@ -315,29 +407,39 @@ namespace OLock
 
                     AppConfig fileConfig = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(configPath), options);
                     if (fileConfig != null)
-                        loadedConfig = fileConfig;
-                    LogInfo($"配置文件加载成功: {configPath}");
-                }
-                else
-                {
-                    LogInfo("配置文件不存在，使用默认配置");
+                    {
+                        // 用 JSON 值覆盖当前配置（但不覆盖 AutoSleep/AutoScreenOff，它们由菜单控制）
+                        config.AppProcessName = fileConfig.AppProcessName ?? config.AppProcessName;
+                        config.CheckIntervalSeconds = fileConfig.CheckIntervalSeconds > 0 ? fileConfig.CheckIntervalSeconds : config.CheckIntervalSeconds;
+                        config.OfflineThreshold = fileConfig.OfflineThreshold > 0 ? fileConfig.OfflineThreshold : config.OfflineThreshold;
+                        config.WarmupSeconds = fileConfig.WarmupSeconds > 0 ? fileConfig.WarmupSeconds : config.WarmupSeconds;
+                        config.MinWarmupSeconds = fileConfig.MinWarmupSeconds > 0 ? fileConfig.MinWarmupSeconds : config.MinWarmupSeconds;
+                        config.MaxWarmupSeconds = fileConfig.MaxWarmupSeconds > 0 ? fileConfig.MaxWarmupSeconds : config.MaxWarmupSeconds;
+                        if (fileConfig.AllowedRemoteIpPrefixes != null && fileConfig.AllowedRemoteIpPrefixes.Length > 0)
+                            config.AllowedRemoteIpPrefixes = fileConfig.AllowedRemoteIpPrefixes;
+                        if (fileConfig.IgnoredRemoteIpPrefixes != null)
+                            config.IgnoredRemoteIpPrefixes = fileConfig.IgnoredRemoteIpPrefixes;
+                        if (!string.IsNullOrWhiteSpace(fileConfig.SleepCommand))
+                            config.SleepCommand = fileConfig.SleepCommand;
+                        if (fileConfig.SleepArguments != null)
+                            config.SleepArguments = fileConfig.SleepArguments;
+                        LogInfo($"配置文件覆盖成功: {configPath}");
+                        return true;
+                    }
                 }
             }
             catch (Exception ex)
             {
                 LogError($"配置文件加载失败: {ex.Message}");
             }
-
-            loadedConfig.Normalize();
-            return loadedConfig;
+            return false;
         }
 
         [STAThread]
         static void Main(string[] args)
         {
             InitLogger();
-            config = LoadAppConfig();
-            LogInfo($"{APP_NAME} 启动, 进程: {config.AppProcessName}, 语言: {currentLang}");
+            config = AppConfig.CreateDefault();
 
             // 隐藏控制台窗口
             var handle = GetConsoleWindow();
@@ -346,8 +448,13 @@ namespace OLock
 
             // 检测系统语言
             currentLang = GetUILanguage();
-            LogInfo($"系统语言: {currentLang}");
+
+            // 先从注册表加载全部设置，再用 JSON 覆盖（如果存在）
             LoadSettings();
+            if (LoadJsonConfigIfExists())
+                config.Normalize();
+
+            LogInfo($"{APP_NAME} 启动, 进程: {config.AppProcessName}, 语言: {currentLang}");
             LogInfo($"设置加载完成 - 自动睡眠: {autoSleep}, 自动关屏: {autoScreenOff}");
 
             // 初始化托盘图标
@@ -470,6 +577,9 @@ namespace OLock
                 LogInfo($"自动关屏: {(autoScreenOff ? "开启" : "关闭")}");
             };
 
+            var settingsItem = new ToolStripMenuItem(Tr("tray_settings"));
+            settingsItem.Click += (s, e) => ShowSettingsWindow();
+
             var logItem = new ToolStripMenuItem(Tr("tray_log"));
             logItem.Click += (s, e) => ShowLogViewer();
 
@@ -487,6 +597,7 @@ namespace OLock
             menu.Items.Add(autostartItem);
             menu.Items.Add(autoSleepItem);
             menu.Items.Add(autoScreenOffItem);
+            menu.Items.Add(settingsItem);
             menu.Items.Add(logItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(quitItem);
@@ -1077,13 +1188,26 @@ namespace OLock
                 {
                     if (key != null)
                     {
+                        // 配置项
+                        var v = key.GetValue("AppProcessName"); if (v != null) config.AppProcessName = v.ToString();
+                        v = key.GetValue("CheckIntervalSeconds"); if (v != null) config.CheckIntervalSeconds = Convert.ToInt32(v);
+                        v = key.GetValue("OfflineThreshold"); if (v != null) config.OfflineThreshold = Convert.ToInt32(v);
+                        v = key.GetValue("WarmupSeconds"); if (v != null) config.WarmupSeconds = Convert.ToInt32(v);
+                        v = key.GetValue("MinWarmupSeconds"); if (v != null) config.MinWarmupSeconds = Convert.ToInt32(v);
+                        v = key.GetValue("MaxWarmupSeconds"); if (v != null) config.MaxWarmupSeconds = Convert.ToInt32(v);
+                        v = key.GetValue("AllowedRemoteIpPrefixes"); if (v != null) config.AllowedRemoteIpPrefixes = v.ToString().Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                        v = key.GetValue("IgnoredRemoteIpPrefixes"); if (v != null) config.IgnoredRemoteIpPrefixes = v.ToString().Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                        v = key.GetValue("SleepCommand"); if (v != null) config.SleepCommand = v.ToString();
+                        v = key.GetValue("SleepArguments"); if (v != null) config.SleepArguments = v.ToString();
+
+                        // 用户偏好
                         var sleepVal = key.GetValue("AutoSleep");
                         if (sleepVal != null) autoSleep = Convert.ToBoolean(sleepVal);
-
                         var screenOffVal = key.GetValue("AutoScreenOff");
                         if (screenOffVal != null) autoScreenOff = Convert.ToBoolean(screenOffVal);
                     }
                 }
+                config.Normalize();
             }
             catch { }
         }
@@ -1096,6 +1220,19 @@ namespace OLock
                 {
                     if (key != null)
                     {
+                        // 配置项
+                        key.SetValue("AppProcessName", config.AppProcessName);
+                        key.SetValue("CheckIntervalSeconds", config.CheckIntervalSeconds);
+                        key.SetValue("OfflineThreshold", config.OfflineThreshold);
+                        key.SetValue("WarmupSeconds", config.WarmupSeconds);
+                        key.SetValue("MinWarmupSeconds", config.MinWarmupSeconds);
+                        key.SetValue("MaxWarmupSeconds", config.MaxWarmupSeconds);
+                        key.SetValue("AllowedRemoteIpPrefixes", string.Join(",", config.AllowedRemoteIpPrefixes));
+                        key.SetValue("IgnoredRemoteIpPrefixes", string.Join(",", config.IgnoredRemoteIpPrefixes));
+                        key.SetValue("SleepCommand", config.SleepCommand);
+                        key.SetValue("SleepArguments", config.SleepArguments);
+
+                        // 用户偏好
                         key.SetValue("AutoSleep", autoSleep);
                         key.SetValue("AutoScreenOff", autoScreenOff);
                     }
