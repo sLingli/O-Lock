@@ -226,8 +226,8 @@ namespace OLock
         static System.Windows.Forms.Timer monitorTimer;
         static int elapsedTicks = 0;       // 自上次 netstat 检查以来的 tick 数
         static bool isChecking = false;    // 防止并发执行 netstat 检查
-        static int checkGeneration = 0;    // 异步检查代次号，状态重置时递增
-        static DateTime isCheckingSince = DateTime.MinValue; // isChecking 开始时间
+        static DateTime lastCheckSuccessTime = DateTime.MinValue; // 最后一次成功检查的时间
+        static string lastIconState = null;  // 缓存：上次图标状态，避免无变化时重复创建 Icon
 
         static bool autoSleep = false;
         static bool autoScreenOff = false;
@@ -660,16 +660,27 @@ namespace OLock
             return Tr("tray_offline", APP_NAME, offlineCount, config.OfflineThreshold);
         }
 
-        // UpdateIcon 现在只在 UI 线程上调用 (由 Timer Tick 触发)，不再有跨线程问题
+        // UpdateIcon 只在 UI 线程上调用 (由 Timer Tick 触发)，不再有跨线程问题
+        // 仅在状态变化时重建图标，避免 GDI handle 泄漏
         static void UpdateIcon()
         {
             if (trayIcon == null) return;
             try
             {
-                var oldIcon = trayIcon.Icon;
-                trayIcon.Icon = CreateIcon(GetIconState());
-                trayIcon.Text = GetStatusText().Length > 63 ? GetStatusText().Substring(0, 63) : GetStatusText();
-                oldIcon?.Dispose();
+                string currentState = GetIconState();
+                string statusText = GetStatusText();
+                if (statusText.Length > 63) statusText = statusText.Substring(0, 63);
+
+                // 只在状态或文本变化时更新，避免每秒重建 Icon
+                if (currentState != lastIconState || statusText != trayIcon.Text)
+                {
+                    var oldIcon = trayIcon.Icon;
+                    trayIcon.Icon = CreateIcon(currentState);
+                    oldIcon?.Dispose();
+                    lastIconState = currentState;
+                }
+
+                trayIcon.Text = statusText;
             }
             catch { }
         }
@@ -707,8 +718,8 @@ namespace OLock
 
         // Checks whether the configured process has an established connection
         // to a configured remote IP prefix.
-        // 在后台线程执行，带超时保护
-        static bool CheckPhoneConnection()
+        // 在后台线程执行，带 async/await 超时保护
+        static async Task<bool> CheckPhoneConnectionAsync()
         {
             try
             {
@@ -721,7 +732,7 @@ namespace OLock
 
                 if (pids.Count == 0) return false;
 
-                // 执行 netstat -ano 命令 (带超时保护)
+                // 执行 netstat -ano 命令 (带 async/await 超时保护)
                 var psi = new ProcessStartInfo
                 {
                     FileName = "netstat",
@@ -733,15 +744,20 @@ namespace OLock
 
                 using (var process = Process.Start(psi))
                 {
-                    // 异步读取 stdout，带 10 秒超时
+                    // async 读取 stdout，带 10 秒超时
                     var readTask = process.StandardOutput.ReadToEndAsync();
-                    if (!readTask.Wait(TimeSpan.FromSeconds(10)))
+                    var timeoutTask = Task.Delay(TimeSpan.FromSeconds(10));
+                    var completedTask = await Task.WhenAny(readTask, timeoutTask);
+
+                    if (completedTask == timeoutTask)
                     {
+                        LogError("netstat 执行超时 (10秒)，终止进程");
                         try { process.Kill(); } catch { }
-                        return false; // 超时视为未检测到
+                        return false;
                     }
 
-                    string output = readTask.Result;
+                    // readTask 已完成，获取结果
+                    string output = await readTask;
 
                     // 逐行解析 netstat 输出
                     var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
@@ -770,7 +786,10 @@ namespace OLock
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                LogError($"CheckPhoneConnection 异常: {ex.Message}");
+            }
             return false;
         }
 
@@ -873,9 +892,9 @@ namespace OLock
             isWarmup = false;
             isOnline = false;
             offlineCount = 0;
-            elapsedTicks = 0;
             isChecking = false;
-            checkGeneration++;  // 使旧的异步回调失效
+            elapsedTicks = 0;
+            lastCheckSuccessTime = DateTime.MinValue;
             LogInfo("状态: 等待应用启动");
             UpdateIcon();
 
@@ -901,9 +920,8 @@ namespace OLock
             warmupRemaining = warmupTime;
             offlineCount = 0;
             isOnline = false;
-            elapsedTicks = 0;
             isChecking = false;
-            checkGeneration++;  // 使旧的异步回调失效
+            elapsedTicks = 0;
             LogInfo($"状态: 缓冲期开始 ({warmupTime}秒)");
             UpdateIcon();
         }
@@ -955,11 +973,24 @@ namespace OLock
 
         // MonitorTick 在 UI 线程上由 Forms.Timer 触发 (每 1 秒)
         // 所有 UI 操作 (UpdateIcon) 天然在 UI 线程上，无跨线程问题
-        // 阻塞 I/O (IsAppRunning, CheckPhoneConnection) 通过 Task.Run 在后台执行
-        static void MonitorTick(object sender, EventArgs e)
+        // 阻塞 I/O (IsAppRunning, CheckPhoneConnection) 通过 Task.Run + await 在后台执行
+        // async void 仅用于事件处理器，WinForms Timer 可以安全使用
+        static async void MonitorTick(object sender, EventArgs e)
         {
             try
             {
+                // 0. isOnline 过期保护：如果太久没有成功检查结果，强制标记离线
+                if (isOnline && lastCheckSuccessTime != DateTime.MinValue)
+                {
+                    double staleSeconds = config.OfflineThreshold * config.CheckIntervalSeconds * 3;
+                    if ((DateTime.Now - lastCheckSuccessTime).TotalSeconds > staleSeconds)
+                    {
+                        LogError($"检查结果过期 ({(int)(DateTime.Now - lastCheckSuccessTime).TotalSeconds}秒无结果)，强制标记离线");
+                        isOnline = false;
+                        UpdateIcon();
+                    }
+                }
+
                 // 1. 检测屏幕锁定状态 (非阻塞 API 调用)
                 bool currentlyLocked = IsScreenLocked();
 
@@ -981,17 +1012,10 @@ namespace OLock
                     return;
                 }
 
-                // isChecking 超时保护 (30秒)
-                if (isChecking && (DateTime.Now - isCheckingSince).TotalSeconds > 30)
-                {
-                    LogError("isChecking 超时，强制重置");
-                    isChecking = false;
-                }
-
-                // 2. 等待主程序启动阶段 (灰色)
+                // 2. 等待主程序启动阶段 (灰色) — IsAppRunning 移到后台线程
                 if (isWaitingForApp)
                 {
-                    if (IsAppRunning())
+                    if (await Task.Run(IsAppRunning))
                     {
                         StartWarmup();
                     }
@@ -1005,8 +1029,8 @@ namespace OLock
                 // 3. 缓冲期阶段 (黄色)
                 if (isWarmup)
                 {
-                    // IsAppRunning 在缓冲期可以同步调用 (只检查进程名，很快)
-                    if (!IsAppRunning())
+                    // IsAppRunning 移到后台线程，避免阻塞 UI
+                    if (!await Task.Run(IsAppRunning))
                     {
                         StartWaitingForApp();
                         return;
@@ -1021,59 +1045,48 @@ namespace OLock
                     if (!isChecking)
                     {
                         isChecking = true;
-                        isCheckingSince = DateTime.Now;
-                        int gen = checkGeneration;
-                        Task.Run(() =>
+                        try
                         {
-                            try { return CheckPhoneConnection(); }
-                            catch { return false; }
-                        }).ContinueWith(task =>
+                            bool connected = await CheckPhoneConnectionAsync();
+
+                            // 检查结果有效，更新时间戳
+                            lastCheckSuccessTime = DateTime.Now;
+
+                            if (connected)
+                            {
+                                isWarmup = false;
+                                warmupRemaining = 0;
+                                offlineCount = 0;
+                                isOnline = true;
+                                elapsedTicks = 0;
+                                LogInfo("状态: 手机已连接 (缓冲期内)");
+                            }
+                            else
+                            {
+                                warmupRemaining--;
+                                if (warmupRemaining <= 0)
+                                {
+                                    LogInfo("缓冲期超时，手机未连接");
+                                    if (autoSleep)
+                                        ExecuteSleep();
+                                    else
+                                        TriggerLock();
+                                    StartWaitingForApp();
+                                    return;
+                                }
+                            }
+                            UpdateIcon();
+                        }
+                        finally
                         {
-                            // 回到 UI 线程处理结果
-                            try
-                            {
-                                isChecking = false;
-                                if (gen != checkGeneration) return; // 状态已重置，丢弃旧结果
-
-                                bool connected = task.IsCompleted ? task.Result : false;
-
-                                if (connected)
-                                {
-                                    isWarmup = false;
-                                    warmupRemaining = 0;
-                                    offlineCount = 0;
-                                    isOnline = true;
-                                    elapsedTicks = 0;
-                                    LogInfo("状态: 手机已连接 (缓冲期内)");
-                                }
-                                else
-                                {
-                                    warmupRemaining--;
-                                    if (warmupRemaining <= 0)
-                                    {
-                                        LogInfo("缓冲期超时，手机未连接");
-                                        if (autoSleep)
-                                            ExecuteSleep();
-                                        else
-                                            TriggerLock();
-                                        StartWaitingForApp();
-                                        return;
-                                    }
-                                }
-                                UpdateIcon();
-                            }
-                            catch (Exception ex)
-                            {
-                                LogError($"缓冲期检查回调异常: {ex.Message}");
-                                isChecking = false;
-                            }
-                        }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.FromCurrentSynchronizationContext());
+                            isChecking = false;
+                        }
                     }
                     return;
                 }
 
-                // 4. 正常监控阶段 (绿色/红色)
-                if (!IsAppRunning())
+                // 4. 正常监控阶段 (绿色/红色) — IsAppRunning 移到后台线程
+                if (!await Task.Run(IsAppRunning))
                 {
                     StartWaitingForApp();
                     UpdateIcon();
@@ -1090,53 +1103,42 @@ namespace OLock
                     if (!isChecking)
                     {
                         isChecking = true;
-                        isCheckingSince = DateTime.Now;
-                        int gen = checkGeneration;
-                        Task.Run(() =>
+                        try
                         {
-                            try { return CheckPhoneConnection(); }
-                            catch { return false; }
-                        }).ContinueWith(task =>
-                        {
-                            // 回到 UI 线程处理结果
-                            try
+                            bool phoneConnected = await CheckPhoneConnectionAsync();
+
+                            // 检查结果有效，更新时间戳
+                            lastCheckSuccessTime = DateTime.Now;
+
+                            if (phoneConnected)
                             {
-                                isChecking = false;
-                                if (gen != checkGeneration) return; // 状态已重置，丢弃旧结果
+                                if (!isOnline) LogInfo("状态: 手机在线");
+                                isOnline = true;
+                                offlineCount = 0;
+                            }
+                            else
+                            {
+                                if (isOnline) LogInfo("状态: 手机离线");
+                                isOnline = false;
+                                offlineCount++;
 
-                                bool phoneConnected = task.IsCompleted ? task.Result : false;
-
-                                if (phoneConnected)
+                                if (offlineCount >= config.OfflineThreshold)
                                 {
-                                    if (!isOnline) LogInfo("状态: 手机在线");
-                                    isOnline = true;
+                                    LogInfo($"连续 {offlineCount} 次未检测到手机");
+                                    if (autoSleep)
+                                        ExecuteSleep();
+                                    else
+                                        TriggerLock();
                                     offlineCount = 0;
                                 }
-                                else
-                                {
-                                    if (isOnline) LogInfo("状态: 手机离线");
-                                    isOnline = false;
-                                    offlineCount++;
-
-                                    if (offlineCount >= config.OfflineThreshold)
-                                    {
-                                        LogInfo($"连续 {offlineCount} 次未检测到手机");
-                                        if (autoSleep)
-                                            ExecuteSleep();
-                                        else
-                                            TriggerLock();
-                                        offlineCount = 0;
-                                    }
-                                }
-
-                                UpdateIcon();
                             }
-                            catch (Exception ex)
-                            {
-                                LogError($"监控检查回调异常: {ex.Message}");
-                                isChecking = false;
-                            }
-                        }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.FromCurrentSynchronizationContext());
+
+                            UpdateIcon();
+                        }
+                        finally
+                        {
+                            isChecking = false;
+                        }
                     }
                 }
             }
