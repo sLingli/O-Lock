@@ -18,7 +18,7 @@ namespace OLock
             {
                 Text = Tr("tray_settings"),
                 Width = 480,
-                Height = 390,
+                Height = 422,
                 StartPosition = FormStartPosition.CenterScreen,
                 MinimizeBox = false,
                 MaximizeBox = false,
@@ -43,6 +43,12 @@ namespace OLock
             form.Controls.Add(new Label { Text = "缓冲期 (秒)", Left = 10, Top = y + 3, Width = labelW });
             var numWarmup = new NumericUpDown { Left = inputX, Top = y, Width = inputW, Minimum = 1, Maximum = 3600, Value = config.WarmupSeconds };
             form.Controls.Add(numWarmup);
+            y += 32;
+
+            // 日志保留
+            form.Controls.Add(new Label { Text = "日志保留 (天)", Left = 10, Top = y + 3, Width = labelW });
+            var numRetention = new NumericUpDown { Left = inputX, Top = y, Width = inputW, Minimum = 1, Maximum = 365, Value = config.LogRetentionDays };
+            form.Controls.Add(numRetention);
             y += 32;
 
             // 允许的 IP 前缀
@@ -78,12 +84,14 @@ namespace OLock
                 config.AppProcessName = txtProcess.Text.Trim();
                 config.OfflineSeconds = (int)numThreshold.Value;
                 config.WarmupSeconds = (int)numWarmup.Value;
+                config.LogRetentionDays = (int)numRetention.Value;
                 config.AllowedRemoteIpPrefixes = txtAllowed.Text.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
                 config.IgnoredRemoteIpPrefixes = txtIgnored.Text.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
                 config.SleepCommand = txtSleepCmd.Text.Trim();
                 config.SleepArguments = txtSleepArgs.Text;
                 config.Normalize();
                 SaveSettings();
+                CleanupExpiredEntries(); // 立即按新的保留天数清理
                 LogInfo("设置已保存");
                 form.Close();
             };

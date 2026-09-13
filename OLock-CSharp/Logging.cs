@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Windows.Forms;
 
@@ -8,11 +10,12 @@ using static OLock.Program;
 
 namespace OLock
 {
-    // 日志：写文件 + 大小轮转 + 内置查看器
+    // 日志：写文件 + 大小轮转 + 按保留天数自动清理 + 内置查看器
     internal static class Logging
     {
         private static readonly object logLock = new object();
         private static string? logFilePath;
+        private static DateTime lastCleanupDate = DateTime.MinValue; // 上次日志清理的日期
 
         internal static void InitLogger()
         {
@@ -27,6 +30,9 @@ namespace OLock
             {
                 try
                 {
+                    // 跨天后首次写日志时顺带清理一次过期日志
+                    CleanupIfNeeded();
+
                     if (File.Exists(logFilePath) && new FileInfo(logFilePath).Length > 500 * 1024)
                     {
                         var content = File.ReadAllText(logFilePath);
@@ -43,6 +49,64 @@ namespace OLock
 
         internal static void LogInfo(string msg) => Log("INFO", msg);
         internal static void LogError(string msg) => Log("ERROR", msg);
+
+        // 删除超过保留期的日志行 (config.LogRetentionDays)。
+        // 启动时和保存设置后由外壳调用，此后每天首次写日志时自动再清一次。
+        internal static void CleanupExpiredEntries()
+        {
+            lastCleanupDate = DateTime.Today; // 无论结果如何，当天不再重复清理
+            try
+            {
+                if (logFilePath == null || !File.Exists(logFilePath))
+                    return;
+
+                var cutoff = DateTime.Now.AddDays(-config.LogRetentionDays);
+                string[] lines = File.ReadAllLines(logFilePath);
+                List<string> kept = FilterLines(lines, cutoff);
+                if (kept.Count == lines.Length)
+                    return;
+
+                File.WriteAllLines(logFilePath, kept);
+                LogInfo($"日志清理: 删除 {lines.Length - kept.Count} 条过期记录 (保留最近 {config.LogRetentionDays} 天)");
+            }
+            catch (Exception ex)
+            {
+                LogError($"日志清理失败: {ex.Message}");
+            }
+        }
+
+        // 日期变化后首次写日志时清理一次
+        private static void CleanupIfNeeded()
+        {
+            var today = DateTime.Today;
+            if (lastCleanupDate == today)
+                return;
+            lastCleanupDate = today;
+            CleanupExpiredEntries();
+        }
+
+        // 过滤日志行：解析得出时间戳且早于 cutoff 的行被丢弃，解析不出的行保留
+        internal static List<string> FilterLines(IEnumerable<string> lines, DateTime cutoff)
+        {
+            var kept = new List<string>();
+            foreach (var line in lines)
+            {
+                if (TryParseTimestamp(line, out DateTime ts) && ts < cutoff)
+                    continue;
+                kept.Add(line);
+            }
+            return kept;
+        }
+
+        // 行格式: "[yyyy-MM-dd HH:mm:ss] LEVEL: message"
+        private static bool TryParseTimestamp(string line, out DateTime timestamp)
+        {
+            timestamp = DateTime.MinValue;
+            if (line.Length < 21 || line[0] != '[')
+                return false;
+            return DateTime.TryParseExact(line.Substring(1, 19), "yyyy-MM-dd HH:mm:ss",
+                CultureInfo.InvariantCulture, DateTimeStyles.None, out timestamp);
+        }
 
         internal static void ShowLogViewer()
         {

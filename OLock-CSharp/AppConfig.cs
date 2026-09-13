@@ -20,6 +20,7 @@ namespace OLock
         public string[] IgnoredRemoteIpPrefixes { get; set; } = Array.Empty<string>();
         public string SleepCommand { get; set; } = "";
         public string SleepArguments { get; set; } = "";
+        public int LogRetentionDays { get; set; }
 
         public static AppConfig CreateDefault()
         {
@@ -33,7 +34,8 @@ namespace OLock
                 AllowedRemoteIpPrefixes = new[] { "192.168.", "10." },
                 IgnoredRemoteIpPrefixes = new string[0],
                 SleepCommand = "rundll32.exe",
-                SleepArguments = "powrprof.dll,SetSuspendState 0,1,0"
+                SleepArguments = "powrprof.dll,SetSuspendState 0,1,0",
+                LogRetentionDays = 7
             };
         }
 
@@ -58,6 +60,8 @@ namespace OLock
 
             if (SleepArguments == null)
                 SleepArguments = string.Empty;
+
+            LogRetentionDays = Clamp(LogRetentionDays, 1, 365, 7);
         }
 
         private static int Clamp(int value, int min, int max, int fallback)
@@ -115,6 +119,7 @@ namespace OLock
                         v = key.GetValue("IgnoredRemoteIpPrefixes"); if (v != null) config.IgnoredRemoteIpPrefixes = v.ToString()!.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
                         v = key.GetValue("SleepCommand"); if (v != null) config.SleepCommand = v.ToString()!;
                         v = key.GetValue("SleepArguments"); if (v != null) config.SleepArguments = v.ToString()!;
+                        v = key.GetValue("LogRetentionDays"); if (v != null) config.LogRetentionDays = Convert.ToInt32(v);
 
                         // 用户偏好
                         var sleepVal = key.GetValue("AutoSleep");
@@ -146,6 +151,7 @@ namespace OLock
                         key.SetValue("IgnoredRemoteIpPrefixes", string.Join(",", config.IgnoredRemoteIpPrefixes));
                         key.SetValue("SleepCommand", config.SleepCommand);
                         key.SetValue("SleepArguments", config.SleepArguments);
+                        key.SetValue("LogRetentionDays", config.LogRetentionDays);
 
                         // 用户偏好
                         key.SetValue("AutoSleep", autoSleep);
@@ -191,6 +197,8 @@ namespace OLock
                             config.SleepCommand = fileConfig.SleepCommand;
                         if (fileConfig.SleepArguments != null)
                             config.SleepArguments = fileConfig.SleepArguments;
+                        if (fileConfig.LogRetentionDays > 0)
+                            config.LogRetentionDays = fileConfig.LogRetentionDays;
                         LogInfo($"配置文件覆盖成功: {configPath}");
                         return true;
                     }

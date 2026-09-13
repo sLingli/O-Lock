@@ -82,6 +82,26 @@ namespace OLock.Tests
             Assert.Equal(expected, c.WarmupSeconds);
         }
 
+        [Theory]
+        [InlineData(0, 7)]     // 非法值回退默认
+        [InlineData(-1, 7)]
+        [InlineData(1, 1)]
+        [InlineData(7, 7)]
+        [InlineData(400, 365)] // 超上界钳制
+        public void Normalize_ClampsLogRetentionDays(int input, int expected)
+        {
+            var c = AppConfig.CreateDefault();
+            c.LogRetentionDays = input;
+            c.Normalize();
+            Assert.Equal(expected, c.LogRetentionDays);
+        }
+
+        [Fact]
+        public void CreateDefault_LogRetentionDays_Is7()
+        {
+            Assert.Equal(7, AppConfig.CreateDefault().LogRetentionDays);
+        }
+
         [Fact]
         public void Normalize_MaxWarmupBelowMin_ClampsUpToMin()
         {

@@ -1,6 +1,7 @@
 {
   "appProcessName": "O+Connect",
   "offlineSeconds": 9,
+  "logRetentionDays": 7,
   "warmupSeconds": 60,
   "minWarmupSeconds": 30,
   "maxWarmupSeconds": 600,

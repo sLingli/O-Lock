@@ -62,6 +62,9 @@ namespace OLock
             if (LoadJsonConfigIfExists())
                 config.Normalize();
 
+            // 清理超过保留期的日志
+            CleanupExpiredEntries();
+
             LogInfo($"{APP_NAME} 启动, 进程: {config.AppProcessName}, 语言: {currentLang}");
             LogInfo($"设置加载完成 - 自动睡眠: {autoSleep}, 自动关屏: {autoScreenOff}");
 
