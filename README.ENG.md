@@ -17,7 +17,7 @@ When using **OPPO Connect (PC Connect)**, the native Windows "Dynamic Lock" ofte
     - Connected -> **Green**.
     - Timeout -> **Locks Screen**.
 3.  **🟢 Green (Guarding)**: Phone connected.
-    - Disconnected (3 checks/9s) -> **Locks Screen**.
+    - Disconnected for 9s (configurable) -> **Locks Screen**.
 4.  **🔴 Red (Locked)**: Screen locked. Resets to Gray upon unlock.
 
 ### 📥 Installation & Usage
