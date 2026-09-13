@@ -127,7 +127,7 @@ namespace OLock
             {
                 Text = Tr("tray_settings"),
                 Width = 480,
-                Height = 420,
+                Height = 390,
                 StartPosition = FormStartPosition.CenterScreen,
                 MinimizeBox = false,
                 MaximizeBox = false,
@@ -142,15 +142,9 @@ namespace OLock
             form.Controls.Add(txtProcess);
             y += 32;
 
-            // 检测间隔
-            form.Controls.Add(new Label { Text = "检测间隔 (秒)", Left = 10, Top = y + 3, Width = labelW });
-            var numInterval = new NumericUpDown { Left = inputX, Top = y, Width = inputW, Minimum = 1, Maximum = 60, Value = config.CheckIntervalSeconds };
-            form.Controls.Add(numInterval);
-            y += 32;
-
-            // 离线阈值
-            form.Controls.Add(new Label { Text = "离线阈值 (次)", Left = 10, Top = y + 3, Width = labelW });
-            var numThreshold = new NumericUpDown { Left = inputX, Top = y, Width = inputW, Minimum = 1, Maximum = 20, Value = config.OfflineThreshold };
+            // 离线容忍
+            form.Controls.Add(new Label { Text = "离线容忍 (秒)", Left = 10, Top = y + 3, Width = labelW });
+            var numThreshold = new NumericUpDown { Left = inputX, Top = y, Width = inputW, Minimum = 1, Maximum = 120, Value = config.OfflineSeconds };
             form.Controls.Add(numThreshold);
             y += 32;
 
@@ -191,8 +185,7 @@ namespace OLock
             saveBtn.Click += (s, e) =>
             {
                 config.AppProcessName = txtProcess.Text.Trim();
-                config.CheckIntervalSeconds = (int)numInterval.Value;
-                config.OfflineThreshold = (int)numThreshold.Value;
+                config.OfflineSeconds = (int)numThreshold.Value;
                 config.WarmupSeconds = (int)numWarmup.Value;
                 config.AllowedRemoteIpPrefixes = txtAllowed.Text.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
                 config.IgnoredRemoteIpPrefixes = txtIgnored.Text.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
@@ -212,7 +205,7 @@ namespace OLock
         }
 
         // 全局状态
-        static int offlineCount = 0;
+        static int offlineSeconds = 0;
         static bool isOnline = false;
         static NotifyIcon trayIcon;
         static Form messageForm;
@@ -224,8 +217,7 @@ namespace OLock
 
         // 定时器 (替代后台线程)
         static System.Windows.Forms.Timer monitorTimer;
-        static int elapsedTicks = 0;       // 自上次 netstat 检查以来的 tick 数
-        static bool isChecking = false;    // 防止并发执行 netstat 检查
+        static bool isChecking = false;    // 防止并发执行连接检查
         static DateTime lastCheckSuccessTime = DateTime.MinValue; // 最后一次成功检查的时间
         static string lastIconState = null;  // 缓存：上次图标状态，避免无变化时重复创建 Icon
 
@@ -237,8 +229,7 @@ namespace OLock
         class AppConfig
         {
             public string AppProcessName { get; set; }
-            public int CheckIntervalSeconds { get; set; }
-            public int OfflineThreshold { get; set; }
+            public int OfflineSeconds { get; set; }
             public int WarmupSeconds { get; set; }
             public int MinWarmupSeconds { get; set; }
             public int MaxWarmupSeconds { get; set; }
@@ -252,8 +243,7 @@ namespace OLock
                 return new AppConfig
                 {
                     AppProcessName = "O+Connect",
-                    CheckIntervalSeconds = 3,
-                    OfflineThreshold = 3,
+                    OfflineSeconds = 9,
                     WarmupSeconds = 60,
                     MinWarmupSeconds = 30,
                     MaxWarmupSeconds = 600,
@@ -269,8 +259,7 @@ namespace OLock
                 if (string.IsNullOrWhiteSpace(AppProcessName))
                     AppProcessName = "O+Connect";
 
-                CheckIntervalSeconds = Clamp(CheckIntervalSeconds, 1, 60, 3);
-                OfflineThreshold = Clamp(OfflineThreshold, 1, 20, 3);
+                OfflineSeconds = Clamp(OfflineSeconds, 1, 120, 9);
                 MinWarmupSeconds = Clamp(MinWarmupSeconds, 1, 3600, 30);
                 MaxWarmupSeconds = Clamp(MaxWarmupSeconds, MinWarmupSeconds, 3600, 600);
                 WarmupSeconds = Clamp(WarmupSeconds, MinWarmupSeconds, MaxWarmupSeconds, 60);
@@ -354,7 +343,7 @@ namespace OLock
                 ["tray_waiting"] = "{0}: ⚪ Waiting for {1}",
                 ["tray_warmup"] = "{0}: 🟡 Connecting... ({1}s)",
                 ["tray_online"] = "{0}: 🟢 Phone online",
-                ["tray_offline"] = "{0}: 🔴 Not detected ({1}/{2})",
+                ["tray_offline"] = "{0}: 🔴 Not detected ({1}/{2}s)",
                 ["tray_autostart"] = "Start with Windows",
                 ["tray_autosleep"] = "Sleep",
                 ["tray_autoscreenoff"] = "Turn off screen",
@@ -371,7 +360,7 @@ namespace OLock
                 ["tray_waiting"] = "{0}: ⚪ 等待 {1}",
                 ["tray_warmup"] = "{0}: 🟡 正在连接... ({1}秒)",
                 ["tray_online"] = "{0}: 🟢 手机在线",
-                ["tray_offline"] = "{0}: 🔴 未检测到 ({1}/{2})",
+                ["tray_offline"] = "{0}: 🔴 未检测到 ({1}/{2} 秒)",
                 ["tray_autostart"] = "开机自启",
                 ["tray_autosleep"] = "睡眠",
                 ["tray_autoscreenoff"] = "关闭屏幕",
@@ -388,7 +377,7 @@ namespace OLock
                 ["tray_waiting"] = "{0}: ⚪ 等待 {1}",
                 ["tray_warmup"] = "{0}: 🟡 正在連線... ({1}秒)",
                 ["tray_online"] = "{0}: 🟢 手機在線",
-                ["tray_offline"] = "{0}: 🔴 未偵測到 ({1}/{2})",
+                ["tray_offline"] = "{0}: 🔴 未偵測到 ({1}/{2} 秒)",
                 ["tray_autostart"] = "開機自啟",
                 ["tray_autosleep"] = "睡眠",
                 ["tray_autoscreenoff"] = "關閉螢幕",
@@ -425,8 +414,7 @@ namespace OLock
                     {
                         // 用 JSON 值覆盖当前配置（但不覆盖 AutoSleep/AutoScreenOff，它们由菜单控制）
                         config.AppProcessName = fileConfig.AppProcessName ?? config.AppProcessName;
-                        config.CheckIntervalSeconds = fileConfig.CheckIntervalSeconds > 0 ? fileConfig.CheckIntervalSeconds : config.CheckIntervalSeconds;
-                        config.OfflineThreshold = fileConfig.OfflineThreshold > 0 ? fileConfig.OfflineThreshold : config.OfflineThreshold;
+                        config.OfflineSeconds = fileConfig.OfflineSeconds > 0 ? fileConfig.OfflineSeconds : config.OfflineSeconds;
                         config.WarmupSeconds = fileConfig.WarmupSeconds > 0 ? fileConfig.WarmupSeconds : config.WarmupSeconds;
                         config.MinWarmupSeconds = fileConfig.MinWarmupSeconds > 0 ? fileConfig.MinWarmupSeconds : config.MinWarmupSeconds;
                         config.MaxWarmupSeconds = fileConfig.MaxWarmupSeconds > 0 ? fileConfig.MaxWarmupSeconds : config.MaxWarmupSeconds;
@@ -672,7 +660,7 @@ namespace OLock
                 return Tr("tray_warmup", APP_NAME, warmupRemaining);
             if (isOnline)
                 return Tr("tray_online", APP_NAME);
-            return Tr("tray_offline", APP_NAME, offlineCount, config.OfflineThreshold);
+            return Tr("tray_offline", APP_NAME, offlineSeconds, config.OfflineSeconds);
         }
 
         // UpdateIcon 只在 UI 线程上调用 (由 Timer Tick 触发)，不再有跨线程问题
@@ -916,9 +904,8 @@ namespace OLock
             isWaitingForApp = true;
             isWarmup = false;
             isOnline = false;
-            offlineCount = 0;
+            offlineSeconds = 0;
             isChecking = false;
-            elapsedTicks = 0;
             lastCheckSuccessTime = DateTime.MinValue;
             LogInfo("状态: 等待应用启动");
             UpdateIcon();
@@ -943,10 +930,9 @@ namespace OLock
             isWarmup = true;
             isWaitingForApp = false;
             warmupRemaining = warmupTime;
-            offlineCount = 0;
+            offlineSeconds = 0;
             isOnline = false;
             isChecking = false;
-            elapsedTicks = 0;
             LogInfo($"状态: 缓冲期开始 ({warmupTime}秒)");
             UpdateIcon();
         }
@@ -1007,7 +993,7 @@ namespace OLock
                 // 0. isOnline 过期保护：如果太久没有成功检查结果，强制标记离线
                 if (isOnline && lastCheckSuccessTime != DateTime.MinValue)
                 {
-                    double staleSeconds = config.OfflineThreshold * config.CheckIntervalSeconds * 3;
+                    double staleSeconds = config.OfflineSeconds * 3;
                     if ((DateTime.Now - lastCheckSuccessTime).TotalSeconds > staleSeconds)
                     {
                         LogError($"检查结果过期 ({(int)(DateTime.Now - lastCheckSuccessTime).TotalSeconds}秒无结果)，强制标记离线");
@@ -1076,7 +1062,7 @@ namespace OLock
                             {
                                 isWarmup = false;
                                 warmupRemaining = 0;
-                                offlineCount = 0;
+                                offlineSeconds = 0;
                                 isOnline = true;
                                 LogInfo("状态: 手机已连接 (缓冲期内)");
                             }
@@ -1112,52 +1098,45 @@ namespace OLock
                     return;
                 }
 
-                elapsedTicks++;
-
-                // 按配置的间隔执行手机连接检查
-                if (elapsedTicks >= config.CheckIntervalSeconds)
+                // 每秒检查一次连接，离线按秒累计，达到容忍秒数后锁屏
+                if (!isChecking)
                 {
-                    elapsedTicks = 0;
-
-                    if (!isChecking)
+                    isChecking = true;
+                    try
                     {
-                        isChecking = true;
-                        try
+                        bool phoneConnected = await CheckPhoneConnectionAsync();
+
+                        // 检查结果有效，更新时间戳
+                        lastCheckSuccessTime = DateTime.Now;
+
+                        if (phoneConnected)
                         {
-                            bool phoneConnected = await CheckPhoneConnectionAsync();
-
-                            // 检查结果有效，更新时间戳
-                            lastCheckSuccessTime = DateTime.Now;
-
-                            if (phoneConnected)
-                            {
-                                if (!isOnline) LogInfo("状态: 手机在线");
-                                isOnline = true;
-                                offlineCount = 0;
-                            }
-                            else
-                            {
-                                if (isOnline) LogInfo("状态: 手机离线");
-                                isOnline = false;
-                                offlineCount++;
-
-                                if (offlineCount >= config.OfflineThreshold)
-                                {
-                                    LogInfo($"连续 {offlineCount} 次未检测到手机");
-                                    if (autoSleep)
-                                        ExecuteSleep();
-                                    else
-                                        TriggerLock();
-                                    offlineCount = 0;
-                                }
-                            }
-
-                            UpdateIcon();
+                            if (!isOnline) LogInfo("状态: 手机在线");
+                            isOnline = true;
+                            offlineSeconds = 0;
                         }
-                        finally
+                        else
                         {
-                            isChecking = false;
+                            if (isOnline) LogInfo("状态: 手机离线");
+                            isOnline = false;
+                            offlineSeconds++;
+
+                            if (offlineSeconds >= config.OfflineSeconds)
+                            {
+                                LogInfo($"手机已离线 {offlineSeconds} 秒，执行锁屏");
+                                if (autoSleep)
+                                    ExecuteSleep();
+                                else
+                                    TriggerLock();
+                                offlineSeconds = 0;
+                            }
                         }
+
+                        UpdateIcon();
+                    }
+                    finally
+                    {
+                        isChecking = false;
                     }
                 }
             }
@@ -1211,8 +1190,22 @@ namespace OLock
                     {
                         // 配置项
                         var v = key.GetValue("AppProcessName"); if (v != null) config.AppProcessName = v.ToString();
-                        v = key.GetValue("CheckIntervalSeconds"); if (v != null) config.CheckIntervalSeconds = Convert.ToInt32(v);
-                        v = key.GetValue("OfflineThreshold"); if (v != null) config.OfflineThreshold = Convert.ToInt32(v);
+                        v = key.GetValue("OfflineSeconds");
+                        if (v != null)
+                        {
+                            config.OfflineSeconds = Convert.ToInt32(v);
+                        }
+                        else
+                        {
+                            // 迁移旧版设置: 次数 × 检测间隔(默认3秒) = 容忍秒数
+                            var oldThreshold = key.GetValue("OfflineThreshold");
+                            if (oldThreshold != null)
+                            {
+                                var oldInterval = key.GetValue("CheckIntervalSeconds");
+                                int interval = oldInterval != null ? Convert.ToInt32(oldInterval) : 3;
+                                config.OfflineSeconds = Convert.ToInt32(oldThreshold) * interval;
+                            }
+                        }
                         v = key.GetValue("WarmupSeconds"); if (v != null) config.WarmupSeconds = Convert.ToInt32(v);
                         v = key.GetValue("MinWarmupSeconds"); if (v != null) config.MinWarmupSeconds = Convert.ToInt32(v);
                         v = key.GetValue("MaxWarmupSeconds"); if (v != null) config.MaxWarmupSeconds = Convert.ToInt32(v);
@@ -1243,8 +1236,7 @@ namespace OLock
                     {
                         // 配置项
                         key.SetValue("AppProcessName", config.AppProcessName);
-                        key.SetValue("CheckIntervalSeconds", config.CheckIntervalSeconds);
-                        key.SetValue("OfflineThreshold", config.OfflineThreshold);
+                        key.SetValue("OfflineSeconds", config.OfflineSeconds);
                         key.SetValue("WarmupSeconds", config.WarmupSeconds);
                         key.SetValue("MinWarmupSeconds", config.MinWarmupSeconds);
                         key.SetValue("MaxWarmupSeconds", config.MaxWarmupSeconds);

@@ -1,7 +1,6 @@
 {
   "appProcessName": "O+Connect",
-  "checkIntervalSeconds": 3,
-  "offlineThreshold": 3,
+  "offlineSeconds": 9,
   "warmupSeconds": 60,
   "minWarmupSeconds": 30,
   "maxWarmupSeconds": 600,
