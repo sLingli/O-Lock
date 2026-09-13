@@ -63,7 +63,7 @@ O-Lock 采用智能状态机机制，确保在各种场景下都能准确判断�
 
 ### 📥 安装与使用
 
-1.  **下载**：在右侧 [Releases](https://github.com/你的GitHub用户名/O-Lock/releases) 页面下载最新的 `O-Lock.exe`。
+1.  **下载**：在右侧 [Releases](https://github.com/sLingli/O-Lock/releases) 页面下载最新的 `O-Lock.exe`。
 2.  **运行**：双击程序，无需安装。
 3.  **托盘图标**：右下角会出现一个小圆点，颜色代表当前状态。
     - ⚪ 灰：等待 OPPO 互联启动
