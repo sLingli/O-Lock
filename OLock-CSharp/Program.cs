@@ -27,6 +27,9 @@ namespace OLock
         internal static AppConfig config = AppConfig.CreateDefault();
         // ============================================
 
+        // 应用版本号 (来自 csproj 的 <Version>)，如 "1.2.0"；完整版本含提交哈希，见 Application.ProductVersion
+        internal static string AppVersion { get; } = Application.ProductVersion.Split('+')[0];
+
         // 用户偏好
         internal static bool autoSleep = false;
         internal static bool autoScreenOff = false;
@@ -76,7 +79,7 @@ namespace OLock
             // 清理超过保留期的日志
             CleanupExpiredEntries();
 
-            LogInfo($"{APP_NAME} 启动, 进程: {config.AppProcessName}, 语言: {currentLang}");
+            LogInfo($"{APP_NAME} v{Application.ProductVersion} 启动, 进程: {config.AppProcessName}, 语言: {currentLang}");
             LogInfo($"设置加载完成 - 自动睡眠: {autoSleep}, 自动关屏: {autoScreenOff}");
 
             // 初始化监控状态机

@@ -16,7 +16,7 @@ namespace OLock
         {
             var form = new Form
             {
-                Text = Tr("tray_settings"),
+                Text = $"{Tr("tray_settings")} - {APP_NAME} {AppVersion}",
                 Width = 480,
                 Height = 422,
                 StartPosition = FormStartPosition.CenterScreen,

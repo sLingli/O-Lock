@@ -37,6 +37,12 @@ namespace OLock
         {
             var menu = new ContextMenuStrip();
 
+            // 版本号 (菜单顶部，不可点击)
+            var versionItem = new ToolStripMenuItem($"{APP_NAME} {AppVersion}")
+            {
+                Enabled = false
+            };
+
             var autostartItem = new ToolStripMenuItem(Tr("tray_autostart"))
             {
                 Checked = IsAutostartEnabled()
@@ -93,6 +99,8 @@ namespace OLock
                 Application.Exit();
             };
 
+            menu.Items.Add(versionItem);
+            menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(autostartItem);
             menu.Items.Add(autoSleepItem);
             menu.Items.Add(autoScreenOffItem);
