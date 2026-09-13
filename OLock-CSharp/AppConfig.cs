@@ -70,6 +70,12 @@ namespace OLock
                 return max;
             return value;
         }
+
+        // 旧版设置迁移: 离线次数 × 检测间隔(注册表未记录时按默认 3 秒) = 容忍秒数
+        internal static int MigrateOfflineSeconds(int oldOfflineThreshold, int? oldCheckIntervalSeconds)
+        {
+            return oldOfflineThreshold * (oldCheckIntervalSeconds ?? 3);
+        }
     }
 
     // 配置持久化：注册表 (HKCU\Software\OLock) + 可选 JSON 文件覆盖
@@ -97,8 +103,9 @@ namespace OLock
                             if (oldThreshold != null)
                             {
                                 var oldInterval = key.GetValue("CheckIntervalSeconds");
-                                int interval = oldInterval != null ? Convert.ToInt32(oldInterval) : 3;
-                                config.OfflineSeconds = Convert.ToInt32(oldThreshold) * interval;
+                                config.OfflineSeconds = AppConfig.MigrateOfflineSeconds(
+                                    Convert.ToInt32(oldThreshold),
+                                    oldInterval != null ? Convert.ToInt32(oldInterval) : null);
                             }
                         }
                         v = key.GetValue("WarmupSeconds"); if (v != null) config.WarmupSeconds = Convert.ToInt32(v);

@@ -18,4 +18,13 @@
     <None Update="olock.config.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="OLock.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 测试子项目有自己的 csproj，避免源文件被主工程 glob 进来 -->
+    <Compile Remove="OLock.Tests/**/*.cs" />
+  </ItemGroup>
+
 </Project>
