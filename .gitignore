@@ -35,3 +35,4 @@ desktop.ini
 .vscode/
 .codegraph
 .reasonix
+dist/

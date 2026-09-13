@@ -1,0 +1,64 @@
+# 推送 v* 标签时自动构建并发布 Release
+# 用法: git tag v1.3.0 && git push origin v1.3.0
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # 创建 Release 与上传附件需要写权限
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 完整提交历史，用于生成更新日志
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      # 版本号以 tag 为准: v1.3.0 -> Version=1.3.0 (覆盖 csproj，忘改 csproj 也不会发错版本)
+      - name: Set version from tag
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Publish Lite (framework-dependent)
+        run: dotnet publish OLock-CSharp/OLock.csproj -c Release -p:Version=$VERSION -o dist/Lite
+
+      - name: Publish Full (self-contained)
+        run: dotnet publish OLock-CSharp/OLock.csproj -c Release -p:SelfContained=true -p:Version=$VERSION -o dist/Full
+
+      - name: Package zips
+        run: |
+          powershell.exe -NoProfile -Command "Compress-Archive -Path 'dist/Lite/OLock.exe','dist/Lite/olock.config.json' -DestinationPath 'dist/O-Lock-Lite.zip' -Force"
+          powershell.exe -NoProfile -Command "Compress-Archive -Path 'dist/Full/*.dll','dist/Full/OLock.exe','dist/Full/olock.config.json' -DestinationPath 'dist/O-Lock-Full.zip' -Force"
+
+      # 从上一个 tag 到当前的提交记录生成更新日志 (适配直接 push main、不开 PR 的习惯)
+      - name: Generate changelog
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          {
+            echo "CHANGELOG<<EOF"
+            if [ -n "$PREV_TAG" ]; then
+              git log --format='- %s (%h)' "$PREV_TAG..HEAD"
+              echo ""
+              echo "**完整变更**: https://github.com/$GITHUB_REPOSITORY/compare/$PREV_TAG...$GITHUB_REF_NAME"
+            else
+              git log --format='- %s (%h)'
+            fi
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "O-Lock $GITHUB_REF_NAME" --notes "$CHANGELOG" dist/O-Lock-Full.zip dist/O-Lock-Lite.zip
