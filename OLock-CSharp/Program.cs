@@ -31,10 +31,10 @@ namespace OLock
         internal static bool autoScreenOff = false;
 
         // 监控状态机（纯逻辑，见 MonitorState.cs）
-        internal static MonitorStateMachine monitor;
+        internal static MonitorStateMachine monitor = null!;
 
         // 定时器 (替代后台线程)
-        internal static System.Windows.Forms.Timer monitorTimer;
+        internal static System.Windows.Forms.Timer monitorTimer = null!;
         internal static bool isChecking = false;    // 防止并发执行连接检查
 
         [DllImport("kernel32.dll")]
@@ -110,7 +110,7 @@ namespace OLock
         // 职责：收集事实 (屏幕锁定/进程存活/手机连接) → 交给状态机决策 → 执行动作 → 刷新图标。
         // 状态流转逻辑全部在 MonitorStateMachine (MonitorState.cs) 中，可单元测试。
         // 锁屏期间不收集事实 (与旧行为一致)；连接检查用 isChecking 防止上一秒的检查尚未完成。
-        static async void MonitorTick(object sender, EventArgs e)
+        static async void MonitorTick(object? sender, EventArgs e)
         {
             try
             {
@@ -185,7 +185,7 @@ namespace OLock
                     }
                     else
                     {
-                        string exePath = Process.GetCurrentProcess().MainModule.FileName;
+                        string exePath = Process.GetCurrentProcess().MainModule!.FileName;
                         key.SetValue(APP_NAME, $"\"{exePath}\"");
                     }
                 }

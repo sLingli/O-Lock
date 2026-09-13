@@ -16,9 +16,9 @@ namespace OLock
     // 托盘图标、右键菜单与状态显示
     internal static class TrayUI
     {
-        private static NotifyIcon trayIcon;
-        private static Form messageForm;
-        private static string lastIconState = null;  // 缓存：上次图标状态，避免无变化时重复创建 Icon
+        private static NotifyIcon trayIcon = null!;
+        private static Form messageForm = null!;
+        private static string? lastIconState;  // 缓存：上次图标状态，避免无变化时重复创建 Icon
 
         [DllImport("user32.dll")]
         private static extern bool DestroyIcon(IntPtr handle);

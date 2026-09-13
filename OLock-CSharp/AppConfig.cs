@@ -11,15 +11,15 @@ namespace OLock
     // 应用配置模型
     internal class AppConfig
     {
-        public string AppProcessName { get; set; }
+        public string AppProcessName { get; set; } = "";
         public int OfflineSeconds { get; set; }
         public int WarmupSeconds { get; set; }
         public int MinWarmupSeconds { get; set; }
         public int MaxWarmupSeconds { get; set; }
-        public string[] AllowedRemoteIpPrefixes { get; set; }
-        public string[] IgnoredRemoteIpPrefixes { get; set; }
-        public string SleepCommand { get; set; }
-        public string SleepArguments { get; set; }
+        public string[] AllowedRemoteIpPrefixes { get; set; } = Array.Empty<string>();
+        public string[] IgnoredRemoteIpPrefixes { get; set; } = Array.Empty<string>();
+        public string SleepCommand { get; set; } = "";
+        public string SleepArguments { get; set; } = "";
 
         public static AppConfig CreateDefault()
         {
@@ -84,7 +84,7 @@ namespace OLock
                     if (key != null)
                     {
                         // 配置项
-                        var v = key.GetValue("AppProcessName"); if (v != null) config.AppProcessName = v.ToString();
+                        var v = key.GetValue("AppProcessName"); if (v != null) config.AppProcessName = v.ToString()!;
                         v = key.GetValue("OfflineSeconds");
                         if (v != null)
                         {
@@ -104,10 +104,10 @@ namespace OLock
                         v = key.GetValue("WarmupSeconds"); if (v != null) config.WarmupSeconds = Convert.ToInt32(v);
                         v = key.GetValue("MinWarmupSeconds"); if (v != null) config.MinWarmupSeconds = Convert.ToInt32(v);
                         v = key.GetValue("MaxWarmupSeconds"); if (v != null) config.MaxWarmupSeconds = Convert.ToInt32(v);
-                        v = key.GetValue("AllowedRemoteIpPrefixes"); if (v != null) config.AllowedRemoteIpPrefixes = v.ToString().Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
-                        v = key.GetValue("IgnoredRemoteIpPrefixes"); if (v != null) config.IgnoredRemoteIpPrefixes = v.ToString().Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
-                        v = key.GetValue("SleepCommand"); if (v != null) config.SleepCommand = v.ToString();
-                        v = key.GetValue("SleepArguments"); if (v != null) config.SleepArguments = v.ToString();
+                        v = key.GetValue("AllowedRemoteIpPrefixes"); if (v != null) config.AllowedRemoteIpPrefixes = v.ToString()!.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                        v = key.GetValue("IgnoredRemoteIpPrefixes"); if (v != null) config.IgnoredRemoteIpPrefixes = v.ToString()!.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                        v = key.GetValue("SleepCommand"); if (v != null) config.SleepCommand = v.ToString()!;
+                        v = key.GetValue("SleepArguments"); if (v != null) config.SleepArguments = v.ToString()!;
 
                         // 用户偏好
                         var sleepVal = key.GetValue("AutoSleep");
@@ -167,7 +167,7 @@ namespace OLock
                         AllowTrailingCommas = true
                     };
 
-                    AppConfig fileConfig = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(configPath), options);
+                    AppConfig? fileConfig = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(configPath), options);
                     if (fileConfig != null)
                     {
                         // 用 JSON 值覆盖当前配置（但不覆盖 AutoSleep/AutoScreenOff，它们由菜单控制）

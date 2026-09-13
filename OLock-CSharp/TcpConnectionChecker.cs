@@ -172,7 +172,7 @@ namespace OLock
         // RFC 1918 private IPv4 address check
         private static bool IsPrivateIpAddress(string ipStr)
         {
-            if (!IPAddress.TryParse(ipStr, out IPAddress addr))
+            if (!IPAddress.TryParse(ipStr, out IPAddress? addr) || addr is null)
                 return false;
 
             if (addr.AddressFamily != AddressFamily.InterNetwork)
@@ -194,7 +194,7 @@ namespace OLock
 
         private static bool IsLocalIpAddress(string ipAddress)
         {
-            if (!IPAddress.TryParse(ipAddress, out IPAddress parsedAddress))
+            if (!IPAddress.TryParse(ipAddress, out IPAddress? parsedAddress) || parsedAddress is null)
                 return false;
 
             if (IPAddress.IsLoopback(parsedAddress))

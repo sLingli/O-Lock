@@ -8,7 +8,7 @@ namespace OLock
     // 多语言文本 (en / zh-Hans / zh-Hant)
     internal static class Localization
     {
-        internal static string currentLang;
+        internal static string currentLang = "en";
 
         private static Dictionary<string, Dictionary<string, string>> Texts = new Dictionary<string, Dictionary<string, string>>
         {
@@ -99,8 +99,8 @@ namespace OLock
         internal static string Tr(string key, params object[] args)
         {
             var texts = Texts.ContainsKey(currentLang) ? Texts[currentLang] : Texts["en"];
-            if (texts.TryGetValue(key, out string template))
-                return string.Format(template, args);
+            if (texts.TryGetValue(key, out string? template))
+                return string.Format(template!, args);
             return key;
         }
     }

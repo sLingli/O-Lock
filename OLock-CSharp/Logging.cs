@@ -12,7 +12,7 @@ namespace OLock
     internal static class Logging
     {
         private static readonly object logLock = new object();
-        private static string logFilePath;
+        private static string? logFilePath;
 
         internal static void InitLogger()
         {
@@ -76,7 +76,7 @@ namespace OLock
                 try
                 {
                     if (File.Exists(logFilePath))
-                        textBox.Text = File.ReadAllText(logFilePath);
+                        textBox.Text = File.ReadAllText(logFilePath!);
                     else
                         textBox.Text = Tr("tray_log_empty");
                 }
@@ -91,7 +91,7 @@ namespace OLock
             {
                 try
                 {
-                    lock (logLock) { File.WriteAllText(logFilePath, string.Empty); }
+                    lock (logLock) { File.WriteAllText(logFilePath!, string.Empty); }
                     textBox.Clear();
                 }
                 catch { }
