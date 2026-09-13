@@ -1061,12 +1061,7 @@ namespace OLock
                         return;
                     }
 
-                    // 按配置的间隔执行手机连接检查 (与正常监控阶段一致)
-                    elapsedTicks++;
-                    if (elapsedTicks < config.CheckIntervalSeconds)
-                        return;
-                    elapsedTicks = 0;
-
+                    // 每秒检查一次手机连接，warmupRemaining 按真实秒数倒计时
                     if (!isChecking)
                     {
                         isChecking = true;
@@ -1083,7 +1078,6 @@ namespace OLock
                                 warmupRemaining = 0;
                                 offlineCount = 0;
                                 isOnline = true;
-                                elapsedTicks = 0;
                                 LogInfo("状态: 手机已连接 (缓冲期内)");
                             }
                             else
