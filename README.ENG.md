@@ -22,7 +22,7 @@ When using **OPPO Connect (PC Connect)**, the native Windows "Dynamic Lock" ofte
 
 ### 📥 Installation & Usage
 
-1.  **Download**: Get the latest `O-Lock.exe` from the [Releases](https://github.com/你的GitHub用户名/O-Lock/releases) page on the right side.
+1.  **Download**: Get the latest `O-Lock.exe` from the [Releases](https://github.com/sLingli/O-Lock/releases) page on the right side.
 2.  **Run**: Double-click the file (Portable, no installation needed).
 3.  **Tray Icon**: A small dot will appear in the system tray indicating the status:
     - ⚪ **Gray**: Waiting for OPPO Connect to start.
