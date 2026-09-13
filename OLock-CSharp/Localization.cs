@@ -27,7 +27,8 @@ namespace OLock
                 ["tray_log_refresh"] = "Refresh",
                 ["tray_log_clear"] = "Clear",
                 ["tray_log_empty"] = "(No log entries yet)",
-                ["tray_init"] = "{0}: Initializing..."
+                ["tray_init"] = "{0}: Initializing...",
+                ["tray_already_running"] = "{0} is already running."
             },
             ["zh-Hans"] = new Dictionary<string, string>
             {
@@ -44,7 +45,8 @@ namespace OLock
                 ["tray_log_refresh"] = "刷新",
                 ["tray_log_clear"] = "清空",
                 ["tray_log_empty"] = "（暂无日志）",
-                ["tray_init"] = "{0}: 初始化中..."
+                ["tray_init"] = "{0}: 初始化中...",
+                ["tray_already_running"] = "{0} 已经在运行了。"
             },
             ["zh-Hant"] = new Dictionary<string, string>
             {
@@ -61,7 +63,8 @@ namespace OLock
                 ["tray_log_refresh"] = "重新整理",
                 ["tray_log_clear"] = "清空",
                 ["tray_log_empty"] = "（暫無日誌）",
-                ["tray_init"] = "{0}: 初始化中..."
+                ["tray_init"] = "{0}: 初始化中...",
+                ["tray_already_running"] = "{0} 已經在執行了。"
             }
         };
 

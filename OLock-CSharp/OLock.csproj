@@ -12,6 +12,12 @@
     <AssemblyName>OLock</AssemblyName>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <ApplicationIcon>icon.ico</ApplicationIcon>
+    <!-- 自包含单文件压缩: Full 包 153MB -> 约 62MB，启动多几十毫秒解压（仅独立部署支持压缩） -->
+    <EnableCompressionInSingleFile Condition="'$(SelfContained)' == 'true'">true</EnableCompressionInSingleFile>
+    <!-- 只保留英文资源，去掉依赖包自带的其余语言资源 -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- 调试符号内嵌进 exe，发布产物不再单独带 .pdb -->
+    <DebugType>embedded</DebugType>
   </PropertyGroup>
 
   <ItemGroup>

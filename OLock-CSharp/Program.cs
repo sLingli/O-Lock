@@ -4,6 +4,7 @@
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -46,6 +47,19 @@ namespace OLock
         [STAThread]
         private static void Main(string[] args)
         {
+            Application.EnableVisualStyles();
+
+            // 检测系统语言 (供多语言提示使用)
+            currentLang = GetUILanguage();
+
+            // 单实例保护：已有实例在运行则提示并退出
+            using Mutex singleInstance = new Mutex(true, @"Local\OLock_SingleInstance", out bool createdNew);
+            if (!createdNew)
+            {
+                MessageBox.Show(Tr("tray_already_running", APP_NAME), APP_NAME, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
             InitLogger();
             config = AppConfig.CreateDefault();
 
@@ -53,9 +67,6 @@ namespace OLock
             var handle = GetConsoleWindow();
             if (handle != IntPtr.Zero)
                 ShowWindow(handle, 0); // SW_HIDE = 0
-
-            // 检测系统语言
-            currentLang = GetUILanguage();
 
             // 先从注册表加载全部设置，再用 JSON 覆盖（如果存在）
             LoadSettings();
@@ -72,7 +83,6 @@ namespace OLock
             monitor = new MonitorStateMachine(config, LogInfo, LogError);
 
             // 初始化托盘图标
-            Application.EnableVisualStyles();
             InitTrayIcon();
 
             // 监听系统电源事件 (S3唤醒)

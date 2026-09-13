@@ -17,7 +17,6 @@ namespace OLock
     internal static class TrayUI
     {
         private static NotifyIcon trayIcon = null!;
-        private static Form messageForm = null!;
         private static string? lastIconState;  // 缓存：上次图标状态，避免无变化时重复创建 Icon
 
         [DllImport("user32.dll")]
@@ -25,19 +24,6 @@ namespace OLock
 
         internal static void InitTrayIcon()
         {
-            // 创建一个隐藏窗口用于接收消息
-            messageForm = new Form
-            {
-                ShowInTaskbar = false,
-                WindowState = FormWindowState.Minimized,
-                FormBorderStyle = FormBorderStyle.None,
-                Opacity = 0
-            };
-            // 强制创建句柄，以便接收消息
-            var h = messageForm.Handle;
-
-            messageForm.Load += (s, e) => messageForm.Visible = false;
-
             trayIcon = new NotifyIcon
             {
                 Icon = CreateIcon("waiting"),
