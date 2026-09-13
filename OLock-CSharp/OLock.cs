@@ -330,6 +330,21 @@ namespace OLock
         [DllImport("user32.dll")]
         static extern bool DestroyIcon(IntPtr handle);
 
+        // ================== TCP 连接表查询 (iphlpapi) ==================
+        // 直接调用系统 API 读取 TCP 连接表 (netstat 内部使用的同一 API)，
+        // 避免每次检测都启动 netstat 子进程
+
+        [DllImport("iphlpapi.dll")]
+        static extern uint GetExtendedTcpTable(IntPtr pTcpTable, ref int pdwSize, bool bOrder, uint ulAf, uint tableClass, uint reserved);
+
+        const uint NO_ERROR = 0;
+        const uint ERROR_INSUFFICIENT_BUFFER = 122;
+        const uint AF_INET = 2;                 // 仅查询 IPv4 连接
+        const uint TCP_TABLE_OWNER_PID_ALL = 5; // 返回带拥有进程 PID 的全部 TCP 连接
+        const uint MIB_TCP_STATE_ESTAB = 5;     // ESTABLISHED 状态
+        // MIB_TCPROW_OWNER_PID 布局: state/localAddr/localPort/remoteAddr/remotePort/owningPid，共 6 个 DWORD (24 字节)
+        const int TCP_ROW_SIZE = 24;
+
 
         // 多语言文本
         static Dictionary<string, Dictionary<string, string>> Texts = new Dictionary<string, Dictionary<string, string>>
@@ -718,77 +733,87 @@ namespace OLock
 
         // Checks whether the configured process has an established connection
         // to a configured remote IP prefix.
-        // 在后台线程执行，带 async/await 超时保护
+        // 通过 GetExtendedTcpTable 直接查询内核 TCP 连接表，无外部进程、无文本解析
         static async Task<bool> CheckPhoneConnectionAsync()
+        {
+            var pids = new HashSet<uint>();
+            foreach (var proc in Process.GetProcessesByName(config.AppProcessName))
+            {
+                try { pids.Add((uint)proc.Id); }
+                finally { proc.Dispose(); }
+            }
+
+            if (pids.Count == 0) return false;
+
+            // 表查询放到后台线程执行，避免阻塞 UI
+            return await Task.Run(() => HasEstablishedPhoneConnection(pids));
+        }
+
+        static bool HasEstablishedPhoneConnection(HashSet<uint> pids)
         {
             try
             {
-                var pids = new HashSet<string>();
-                foreach (var proc in Process.GetProcessesByName(config.AppProcessName))
+                // 第一次调用传空缓冲区，获取所需缓冲区大小
+                int size = 0;
+                uint ret = GetExtendedTcpTable(IntPtr.Zero, ref size, false, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
+                if (ret == NO_ERROR && size <= sizeof(int))
+                    return false; // 连接表为空
+                if (ret != ERROR_INSUFFICIENT_BUFFER || size < sizeof(int) + TCP_ROW_SIZE)
                 {
-                    try { pids.Add(proc.Id.ToString()); }
-                    finally { proc.Dispose(); }
+                    LogError($"GetExtendedTcpTable 获取缓冲区大小失败: ret={ret}, size={size}");
+                    return false;
                 }
 
-                if (pids.Count == 0) return false;
-
-                // 执行 netstat -ano 命令 (带 async/await 超时保护)
-                var psi = new ProcessStartInfo
+                for (int attempt = 0; attempt < 3; attempt++)
                 {
-                    FileName = "netstat",
-                    Arguments = "-ano",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    CreateNoWindow = true
-                };
-
-                using (var process = Process.Start(psi))
-                {
-                    // async 读取 stdout，带 10 秒超时
-                    var readTask = process.StandardOutput.ReadToEndAsync();
-                    var timeoutTask = Task.Delay(TimeSpan.FromSeconds(10));
-                    var completedTask = await Task.WhenAny(readTask, timeoutTask);
-
-                    if (completedTask == timeoutTask)
+                    IntPtr buffer = Marshal.AllocHGlobal(size);
+                    try
                     {
-                        LogError("netstat 执行超时 (10秒)，终止进程");
-                        try { process.Kill(); } catch { }
-                        return false;
+                        ret = GetExtendedTcpTable(buffer, ref size, false, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
+                        if (ret == NO_ERROR)
+                            return ScanTcpTableForConnection(buffer, size, pids);
+                    }
+                    finally
+                    {
+                        Marshal.FreeHGlobal(buffer);
                     }
 
-                    // readTask 已完成，获取结果
-                    string output = await readTask;
-
-                    // 逐行解析 netstat 输出
-                    var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                    foreach (var line in lines)
-                    {
-                        // 只处理 ESTABLISHED 连接
-                        if (!line.Contains("ESTABLISHED")) continue;
-
-                        var parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                        if (parts.Length < 5) continue;
-
-                        string pid = parts[parts.Length - 1];
-                        if (!pids.Contains(pid)) continue;
-
-                        // 获取远程地址 (第3列)
-                        string remoteAddr = parts[2];
-                        int lastColon = remoteAddr.LastIndexOf(':');
-                        if (lastColon <= 0) continue;
-
-                        string remoteIP = remoteAddr.Substring(0, lastColon);
-
-                        if (HasAllowedRemoteIpPrefix(remoteIP))
-                        {
-                            return true;
-                        }
-                    }
+                    // 两次调用之间连接表可能增长，按 API 返回的新 size 重试
+                    if (ret != ERROR_INSUFFICIENT_BUFFER)
+                        break;
                 }
+
+                LogError($"GetExtendedTcpTable 调用失败: ret={ret}");
             }
             catch (Exception ex)
             {
                 LogError($"CheckPhoneConnection 异常: {ex.Message}");
+            }
+            return false;
+        }
+
+        static bool ScanTcpTableForConnection(IntPtr buffer, int size, HashSet<uint> pids)
+        {
+            int numEntries = Marshal.ReadInt32(buffer);
+            int maxEntries = (size - sizeof(int)) / TCP_ROW_SIZE;
+            if (numEntries < 0 || numEntries > maxEntries)
+                numEntries = maxEntries; // 防御：避免越界读取
+
+            IntPtr rowPtr = buffer + sizeof(int);
+            for (int i = 0; i < numEntries; i++)
+            {
+                if ((uint)Marshal.ReadInt32(rowPtr) == MIB_TCP_STATE_ESTAB)
+                {
+                    uint pid = (uint)Marshal.ReadInt32(rowPtr + 20);
+                    if (pids.Contains(pid))
+                    {
+                        // 远程地址是网络字节序的 DWORD，低字节即第一个八位组，IPAddress 可直接解析
+                        var remoteIP = new IPAddress((long)(uint)Marshal.ReadInt32(rowPtr + 12)).ToString();
+                        if (HasAllowedRemoteIpPrefix(remoteIP))
+                            return true;
+                    }
+                }
+                rowPtr += TCP_ROW_SIZE;
             }
             return false;
         }
