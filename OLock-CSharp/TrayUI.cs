@@ -156,21 +156,21 @@ namespace OLock
 
         private static string GetIconState()
         {
-            if (isWaitingForApp) return "waiting";
-            if (isWarmup) return "warmup";
-            if (isOnline) return "online";
+            if (monitor.IsWaitingForApp) return "waiting";
+            if (monitor.IsWarmup) return "warmup";
+            if (monitor.IsOnline) return "online";
             return "offline";
         }
 
         private static string GetStatusText()
         {
-            if (isWaitingForApp)
+            if (monitor.IsWaitingForApp)
                 return Tr("tray_waiting", APP_NAME, config.AppProcessName);
-            if (isWarmup)
-                return Tr("tray_warmup", APP_NAME, warmupRemaining);
-            if (isOnline)
+            if (monitor.IsWarmup)
+                return Tr("tray_warmup", APP_NAME, monitor.WarmupRemaining);
+            if (monitor.IsOnline)
                 return Tr("tray_online", APP_NAME);
-            return Tr("tray_offline", APP_NAME, offlineSeconds, config.OfflineSeconds);
+            return Tr("tray_offline", APP_NAME, monitor.OfflineSeconds, config.OfflineSeconds);
         }
 
         // UpdateIcon 只在 UI 线程上调用 (由 Timer Tick 触发)，不再有跨线程问题

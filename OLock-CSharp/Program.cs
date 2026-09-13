@@ -26,20 +26,16 @@ namespace OLock
         internal static AppConfig config = AppConfig.CreateDefault();
         // ============================================
 
-        // 全局状态
-        internal static int offlineSeconds = 0;
-        internal static bool isOnline = false;
-        internal static bool isWarmup = false;
-        internal static bool isWaitingForApp = true;
-        internal static int warmupRemaining = 0;
-        internal static bool wasLocked = false;
+        // 用户偏好
         internal static bool autoSleep = false;
         internal static bool autoScreenOff = false;
+
+        // 监控状态机（纯逻辑，见 MonitorState.cs）
+        internal static MonitorStateMachine monitor;
 
         // 定时器 (替代后台线程)
         internal static System.Windows.Forms.Timer monitorTimer;
         internal static bool isChecking = false;    // 防止并发执行连接检查
-        internal static DateTime lastCheckSuccessTime = DateTime.MinValue; // 最后一次成功检查的时间
 
         [DllImport("kernel32.dll")]
         private static extern IntPtr GetConsoleWindow();
@@ -69,6 +65,9 @@ namespace OLock
             LogInfo($"{APP_NAME} 启动, 进程: {config.AppProcessName}, 语言: {currentLang}");
             LogInfo($"设置加载完成 - 自动睡眠: {autoSleep}, 自动关屏: {autoScreenOff}");
 
+            // 初始化监控状态机
+            monitor = new MonitorStateMachine(config, LogInfo, LogError);
+
             // 初始化托盘图标
             Application.EnableVisualStyles();
             InitTrayIcon();
@@ -97,13 +96,7 @@ namespace OLock
 
         static void StartWaitingForApp()
         {
-            isWaitingForApp = true;
-            isWarmup = false;
-            isOnline = false;
-            offlineSeconds = 0;
-            isChecking = false;
-            lastCheckSuccessTime = DateTime.MinValue;
-            LogInfo("状态: 等待应用启动");
+            monitor.ResetToWaiting();
             UpdateIcon();
 
             // 确保定时器在运行
@@ -111,178 +104,54 @@ namespace OLock
                 monitorTimer.Start();
         }
 
-        static void StartWarmup()
-        {
-            int warmupTime = Math.Max(config.MinWarmupSeconds, Math.Min(config.MaxWarmupSeconds, config.WarmupSeconds));
-            isWarmup = true;
-            isWaitingForApp = false;
-            warmupRemaining = warmupTime;
-            offlineSeconds = 0;
-            isOnline = false;
-            isChecking = false;
-            LogInfo($"状态: 缓冲期开始 ({warmupTime}秒)");
-            UpdateIcon();
-        }
+        // ==================== 核心：定时器驱动的监控外壳 ====================
 
-        // ==================== 核心：定时器驱动的监控逻辑 ====================
-
-        // MonitorTick 在 UI 线程上由 Forms.Timer 触发 (每 1 秒)
-        // 所有 UI 操作 (UpdateIcon) 天然在 UI 线程上，无跨线程问题
-        // 阻塞 I/O (IsAppRunning, CheckPhoneConnection) 通过 Task.Run + await 在后台执行
-        // async void 仅用于事件处理器，WinForms Timer 可以安全使用
+        // MonitorTick 在 UI 线程上由 Forms.Timer 触发 (每 1 秒)。
+        // 职责：收集事实 (屏幕锁定/进程存活/手机连接) → 交给状态机决策 → 执行动作 → 刷新图标。
+        // 状态流转逻辑全部在 MonitorStateMachine (MonitorState.cs) 中，可单元测试。
+        // 锁屏期间不收集事实 (与旧行为一致)；连接检查用 isChecking 防止上一秒的检查尚未完成。
         static async void MonitorTick(object sender, EventArgs e)
         {
             try
             {
-                // 0. isOnline 过期保护：如果太久没有成功检查结果，强制标记离线
-                if (isOnline && lastCheckSuccessTime != DateTime.MinValue)
+                bool screenLocked = IsScreenLocked();
+
+                bool appRunning = false;
+                bool? phoneConnected = null;
+
+                if (screenLocked)
                 {
-                    double staleSeconds = config.OfflineSeconds * 3;
-                    if ((DateTime.Now - lastCheckSuccessTime).TotalSeconds > staleSeconds)
-                    {
-                        LogError($"检查结果过期 ({(int)(DateTime.Now - lastCheckSuccessTime).TotalSeconds}秒无结果)，强制标记离线");
-                        isOnline = false;
-                        UpdateIcon();
-                    }
+                    // 锁屏时强制重置防重入标志，避免解锁后卡死
+                    isChecking = false;
                 }
-
-                // 1. 检测屏幕锁定状态 (非阻塞 API 调用)
-                bool currentlyLocked = IsScreenLocked();
-
-                // 从锁定变为解锁
-                if (wasLocked && !currentlyLocked)
+                else
                 {
-                    wasLocked = false;
-                    LogInfo("屏幕解锁");
-                    StartWaitingForApp();
-                    return; // StartWaitingForApp 已更新图标
-                }
+                    appRunning = await Task.Run(IsAppRunning);
 
-                wasLocked = currentlyLocked;
-
-                // 屏幕锁定时暂停监控
-                if (currentlyLocked)
-                {
-                    if (isChecking) isChecking = false; // 锁屏时强制重置，避免解锁后卡死
-                    return;
-                }
-
-                // 2. 等待主程序启动阶段 (灰色) — IsAppRunning 移到后台线程
-                if (isWaitingForApp)
-                {
-                    if (await Task.Run(IsAppRunning))
-                    {
-                        StartWarmup();
-                    }
-                    else
-                    {
-                        UpdateIcon();
-                    }
-                    return;
-                }
-
-                // 3. 缓冲期阶段 (黄色)
-                if (isWarmup)
-                {
-                    // IsAppRunning 移到后台线程，避免阻塞 UI
-                    if (!await Task.Run(IsAppRunning))
-                    {
-                        StartWaitingForApp();
-                        return;
-                    }
-
-                    // 每秒检查一次手机连接，warmupRemaining 按真实秒数倒计时
-                    if (!isChecking)
+                    // 等待阶段 (灰色) 只关心进程是否启动，不做连接检查
+                    if (!isChecking && !monitor.IsWaitingForApp)
                     {
                         isChecking = true;
                         try
                         {
-                            bool connected = await CheckPhoneConnectionAsync();
-
-                            // 检查结果有效，更新时间戳
-                            lastCheckSuccessTime = DateTime.Now;
-
-                            if (connected)
-                            {
-                                isWarmup = false;
-                                warmupRemaining = 0;
-                                offlineSeconds = 0;
-                                isOnline = true;
-                                LogInfo("状态: 手机已连接 (缓冲期内)");
-                            }
-                            else
-                            {
-                                warmupRemaining--;
-                                if (warmupRemaining <= 0)
-                                {
-                                    LogInfo("缓冲期超时，手机未连接");
-                                    if (autoSleep)
-                                        ExecuteSleep();
-                                    else
-                                        TriggerLock();
-                                    StartWaitingForApp();
-                                    return;
-                                }
-                            }
-                            UpdateIcon();
+                            phoneConnected = await CheckPhoneConnectionAsync();
                         }
                         finally
                         {
                             isChecking = false;
                         }
                     }
-                    return;
                 }
 
-                // 4. 正常监控阶段 (绿色/红色) — IsAppRunning 移到后台线程
-                if (!await Task.Run(IsAppRunning))
+                var action = monitor.Tick(screenLocked, appRunning, phoneConnected);
+                if (action == MonitorAction.Lock)
                 {
-                    StartWaitingForApp();
-                    UpdateIcon();
-                    return;
+                    if (autoSleep)
+                        ExecuteSleep();
+                    else
+                        TriggerLock();
                 }
-
-                // 每秒检查一次连接，离线按秒累计，达到容忍秒数后锁屏
-                if (!isChecking)
-                {
-                    isChecking = true;
-                    try
-                    {
-                        bool phoneConnected = await CheckPhoneConnectionAsync();
-
-                        // 检查结果有效，更新时间戳
-                        lastCheckSuccessTime = DateTime.Now;
-
-                        if (phoneConnected)
-                        {
-                            if (!isOnline) LogInfo("状态: 手机在线");
-                            isOnline = true;
-                            offlineSeconds = 0;
-                        }
-                        else
-                        {
-                            if (isOnline) LogInfo("状态: 手机离线");
-                            isOnline = false;
-                            offlineSeconds++;
-
-                            if (offlineSeconds >= config.OfflineSeconds)
-                            {
-                                LogInfo($"手机已离线 {offlineSeconds} 秒，执行锁屏");
-                                if (autoSleep)
-                                    ExecuteSleep();
-                                else
-                                    TriggerLock();
-                                offlineSeconds = 0;
-                            }
-                        }
-
-                        UpdateIcon();
-                    }
-                    finally
-                    {
-                        isChecking = false;
-                    }
-                }
+                UpdateIcon();
             }
             catch (Exception ex)
             {
