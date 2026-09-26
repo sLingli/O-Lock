@@ -69,7 +69,11 @@ namespace OLock
                 finally { proc.Dispose(); }
             }
 
-            if (pids.Count == 0) return false;
+            if (pids.Count == 0)
+            {
+                LogDebug("网络", $"{config.AppProcessName} 进程未找到 (跳过连接检查)");
+                return false;
+            }
 
             // 表查询放到后台线程执行，避免阻塞 UI
             return await Task.Run(() => HasEstablishedPhoneConnection(pids));
@@ -125,6 +129,10 @@ namespace OLock
             if (numEntries < 0 || numEntries > maxEntries)
                 numEntries = maxEntries; // 防御：避免越界读取
 
+            int pidEstab = 0;
+            // 样本列表仅在详细日志开启时构建，避免正常模式下的每秒分配
+            List<string>? samples = config.LogVerbose ? new List<string>() : null;
+
             IntPtr rowPtr = buffer + sizeof(int);
             for (int i = 0; i < numEntries; i++)
             {
@@ -133,14 +141,25 @@ namespace OLock
                     uint pid = (uint)Marshal.ReadInt32(rowPtr + 20);
                     if (pids.Contains(pid))
                     {
+                        pidEstab++;
                         // 远程地址是网络字节序的 DWORD，低字节即第一个八位组，IPAddress 可直接解析
                         var remoteIP = new IPAddress((long)(uint)Marshal.ReadInt32(rowPtr + 12)).ToString();
                         if (HasAllowedRemoteIpPrefix(remoteIP))
+                        {
+                            if (config.LogVerbose)
+                                LogDebug("网络", $"检查: 连接表 {numEntries} 行, 目标进程 ESTABLISHED {pidEstab} 条, 命中 {remoteIP}");
                             return true;
+                        }
+                        if (samples != null && samples.Count < 3)
+                            samples.Add(remoteIP);
                     }
                 }
                 rowPtr += TCP_ROW_SIZE;
             }
+
+            if (samples != null)
+                LogDebug("网络", $"检查: 连接表 {numEntries} 行, 目标进程 ESTABLISHED {pidEstab} 条" +
+                    (samples.Count > 0 ? $", 未命中 (远程地址样本: {string.Join(", ", samples)})" : ", 无该进程的 ESTABLISHED 连接"));
             return false;
         }
 

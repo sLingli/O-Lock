@@ -40,6 +40,16 @@ namespace OLock
         // 定时器 (替代后台线程)
         internal static System.Windows.Forms.Timer monitorTimer = null!;
         internal static bool isChecking = false;    // 防止并发执行连接检查
+        private static int heartbeatTicks = 0;      // 详细模式心跳计数
+
+        // 状态机当前状态的中文描述 (心跳日志用)
+        private static string DescribeMonitorState()
+        {
+            if (monitor.IsWaitingForApp) return "灰色(等待进程)";
+            if (monitor.IsWarmup) return $"黄色(缓冲期剩 {monitor.WarmupRemaining} 秒)";
+            if (monitor.IsOnline) return "绿色(在线)";
+            return $"红色(离线 {monitor.OfflineSeconds} 秒)";
+        }
 
         [DllImport("kernel32.dll")]
         private static extern IntPtr GetConsoleWindow();
@@ -180,6 +190,16 @@ namespace OLock
                         TriggerLock();
                 }
                 UpdateIcon();
+
+                // 详细模式心跳：每 30 秒一条状态摘要，用于判断"卡住没有、卡在哪一步"
+                if (config.LogVerbose && !screenLocked && ++heartbeatTicks >= 30)
+                {
+                    heartbeatTicks = 0;
+                    int staleSeconds = monitor.LastCheckSuccessTime == DateTime.MinValue
+                        ? -1
+                        : (int)(DateTime.Now - monitor.LastCheckSuccessTime).TotalSeconds;
+                    LogDebug("监控", $"心跳: {DescribeMonitorState()}, 距上次成功检查 {staleSeconds} 秒, 检查进行中: {isChecking}");
+                }
             }
             catch (Exception ex)
             {
