@@ -151,7 +151,7 @@ namespace OLock
             }
             else if (phoneConnected == false)
             {
-                if (IsOnline) info("状态: 手机离线");
+                if (IsOnline) info("手机离线 (进程运行中, 但无匹配连接)");
                 IsOnline = false;
                 OfflineSeconds++;
 
