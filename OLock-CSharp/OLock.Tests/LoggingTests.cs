@@ -39,5 +39,18 @@ namespace OLock.Tests
 
             Assert.Empty(kept);
         }
+
+        [Theory]
+        [InlineData("[2026-09-23 11:07:50] INFO: [监控] 手机在线", "Info")]
+        [InlineData("[2026-09-23 11:07:58] ERROR: [网络] 调用失败 (TcpConnectionChecker.cs:108)", "Error")]
+        [InlineData("[2026-09-23 11:07:47] DEBUG: [网络] 检查: 87 行", "Debug")]
+        [InlineData("[2026-09-23 11:07:59] WARN: 未知级别", "Unknown")]
+        [InlineData("被轮转截断的半行日志", "Unknown")]
+        [InlineData("", "Unknown")]
+        public void ParseLevel_ClassifiesLogLines(string line, string expected)
+        {
+            // 用字符串断言避免 public 测试方法暴露 internal 枚举类型 (CS0051)
+            Assert.Equal(expected, Logging.ParseLevel(line).ToString());
+        }
     }
 }

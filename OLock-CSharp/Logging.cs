@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Windows.Forms;
 
 using static OLock.Localization;
@@ -11,6 +12,15 @@ using static OLock.Program;
 
 namespace OLock
 {
+    // 日志级别（查看器过滤用）
+    internal enum LogLevel
+    {
+        Debug,
+        Info,
+        Error,
+        Unknown
+    }
+
     // 日志：写文件 + 大小轮转 + 按保留天数自动清理 + 内置查看器
     // 格式: [时间戳] LEVEL: [组件] 消息 (源码位置，仅 ERROR)
     internal static class Logging
@@ -83,6 +93,21 @@ namespace OLock
             return text.Length <= 2000 ? text : text.Substring(0, 2000) + "…(已截断)";
         }
 
+        // 从日志行解析级别，解析不出返回 Unknown（如轮转截断的半行）
+        internal static LogLevel ParseLevel(string line)
+        {
+            if (line.Length < 22 || line[0] != '[')
+                return LogLevel.Unknown;
+            int close = line.IndexOf("] ", StringComparison.Ordinal);
+            if (close < 0)
+                return LogLevel.Unknown;
+            string rest = line.Substring(close + 2);
+            if (rest.StartsWith("ERROR:", StringComparison.Ordinal)) return LogLevel.Error;
+            if (rest.StartsWith("INFO:", StringComparison.Ordinal)) return LogLevel.Info;
+            if (rest.StartsWith("DEBUG:", StringComparison.Ordinal)) return LogLevel.Debug;
+            return LogLevel.Unknown;
+        }
+
         // 删除超过保留期的日志行 (config.LogRetentionDays)。
         // 启动时和保存设置后由外壳调用，此后每天首次写日志时自动再清一次。
         internal static void CleanupExpiredEntries()
@@ -146,58 +171,113 @@ namespace OLock
             var form = new Form
             {
                 Text = $"{APP_NAME} Log",
-                Width = 720,
-                Height = 460,
+                Width = 780,
+                Height = 560,
                 StartPosition = FormStartPosition.CenterScreen,
                 MinimizeBox = false,
                 MaximizeBox = false,
                 FormBorderStyle = FormBorderStyle.FixedDialog
             };
 
-            var textBox = new TextBox
+            // 工具条：搜索 + 级别过滤 + 操作按钮
+            var toolPanel = new FlowLayoutPanel
             {
-                Multiline = true,
-                ReadOnly = true,
-                ScrollBars = ScrollBars.Vertical,
-                Font = new Font("Consolas", 9f),
                 Dock = DockStyle.Top,
-                Height = 380,
-                WordWrap = false
+                Height = 36,
+                Padding = new Padding(4),
+                FlowDirection = FlowDirection.LeftToRight
             };
 
-            var refreshBtn = new Button { Text = Tr("tray_log_refresh"), Width = 80, Left = 520, Top = 390 };
-            var clearBtn = new Button { Text = Tr("tray_log_clear"), Width = 80, Left = 610, Top = 390 };
-
-            Action loadLog = () =>
+            var searchBox = new TextBox { Width = 180, PlaceholderText = Tr("tray_log_search") };
+            var levelCombo = new ComboBox { Width = 120, DropDownStyle = ComboBoxStyle.DropDownList };
+            levelCombo.Items.AddRange(new object[]
             {
+                Tr("tray_log_level_all"), Tr("tray_log_level_info"), Tr("tray_log_level_error")
+            });
+            levelCombo.SelectedIndex = 0;
+            var refreshBtn = new Button { Text = Tr("tray_log_refresh"), Width = 70 };
+            var copyBtn = new Button { Text = Tr("tray_log_copy"), Width = 80 };
+            var clearBtn = new Button { Text = Tr("tray_log_clear"), Width = 70 };
+            toolPanel.Controls.AddRange(new Control[] { searchBox, levelCombo, refreshBtn, copyBtn, clearBtn });
+
+            var logBox = new RichTextBox
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                Font = new Font("Consolas", 9f),
+                WordWrap = false,
+                BackColor = Color.White
+            };
+
+            string currentFilteredText = string.Empty;
+
+            void AppendLine(string line)
+            {
+                var color = ParseLevel(line) switch
+                {
+                    LogLevel.Error => Color.Firebrick,
+                    LogLevel.Debug => Color.Gray,
+                    _ => Color.Black
+                };
+                logBox.SelectionStart = logBox.TextLength;
+                logBox.SelectionLength = 0;
+                logBox.SelectionColor = color;
+                logBox.AppendText(line + Environment.NewLine);
+            }
+
+            void LoadLog()
+            {
+                logBox.Clear();
+                var sb = new StringBuilder();
                 try
                 {
-                    if (File.Exists(logFilePath))
-                        textBox.Text = File.ReadAllText(logFilePath!);
-                    else
-                        textBox.Text = Tr("tray_log_empty");
+                    int levelFilter = levelCombo.SelectedIndex; // 0=全部 1=INFO及以上 2=仅ERROR
+                    string needle = searchBox.Text.Trim();
+
+                    string[] lines = File.Exists(logFilePath)
+                        ? File.ReadAllLines(logFilePath!)
+                        : new[] { Tr("tray_log_empty") };
+
+                    foreach (var line in lines)
+                    {
+                        var level = ParseLevel(line);
+                        if (levelFilter == 2 && level != LogLevel.Error) continue;
+                        if (levelFilter == 1 && level == LogLevel.Debug) continue;
+                        if (needle.Length > 0 && !line.Contains(needle, StringComparison.OrdinalIgnoreCase)) continue;
+                        AppendLine(line);
+                        sb.AppendLine(line);
+                    }
+                    currentFilteredText = sb.ToString();
                 }
                 catch (Exception ex)
                 {
-                    textBox.Text = $"Error: {ex.Message}";
+                    AppendLine($"Error: {ex.Message}");
                 }
+            }
+
+            refreshBtn.Click += (s, e) => LoadLog();
+            levelCombo.SelectedIndexChanged += (s, e) => LoadLog();
+            searchBox.TextChanged += (s, e) => LoadLog();
+
+            copyBtn.Click += (s, e) =>
+            {
+                if (currentFilteredText.Length > 0)
+                    Clipboard.SetText(currentFilteredText);
             };
 
-            refreshBtn.Click += (s, e) => loadLog();
             clearBtn.Click += (s, e) =>
             {
                 try
                 {
                     lock (logLock) { File.WriteAllText(logFilePath!, string.Empty); }
-                    textBox.Clear();
+                    LoadLog();
                 }
                 catch { }
             };
 
-            loadLog();
-            form.Controls.Add(textBox);
-            form.Controls.Add(refreshBtn);
-            form.Controls.Add(clearBtn);
+            LoadLog();
+            form.Controls.Add(logBox);
+            form.Controls.Add(toolPanel);
             form.Show();
         }
     }
