@@ -8,7 +8,7 @@
 
 When using **OPPO Connect (PC Connect)**, the native Windows "Dynamic Lock" often fails because the connection occupies the Bluetooth channel, making the signal unstable.
 
-**O-Lock** solves this by monitoring the **TCP connection** of the OPPO Connect service directly, instead of relying on Bluetooth RSSI. **If file transfer works, O-Lock knows you are there!**
+**O-Lock** solves this by monitoring the **TCP connections** of the OPPO Connect processes directly (covering `O+Connect.exe` and its `pantaChannelService.exe` service; the process list is configurable), instead of relying on Bluetooth RSSI. **If file transfer works, O-Lock knows you are there!**
 
 ### 🧠 How it Works
 
