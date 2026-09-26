@@ -111,9 +111,13 @@ namespace OLock
 
         internal static void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
         {
-            if (e.Mode == PowerModes.Resume)
+            if (e.Mode == PowerModes.Suspend)
             {
-                LogInfo("电源", "系统唤醒 (S3 Resume)");
+                LogInfo("电源", "系统进入睡眠 (Suspend)");
+            }
+            else if (e.Mode == PowerModes.Resume)
+            {
+                LogInfo("电源", "系统唤醒 (S3 Resume) → 重置监控");
                 StartWaitingForApp();
             }
         }

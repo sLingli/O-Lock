@@ -86,6 +86,8 @@ namespace OLock
                 ResetToWaiting();
                 return MonitorAction.None;
             }
+            if (!WasLocked && screenLocked)
+                info("屏幕锁定");
             WasLocked = screenLocked;
 
             // 2. 锁屏期间暂停监控
