@@ -103,6 +103,12 @@ namespace OLock.Tests
         }
 
         [Fact]
+        public void CreateDefault_LogVerbose_IsDisabled()
+        {
+            Assert.False(AppConfig.CreateDefault().LogVerbose);
+        }
+
+        [Fact]
         public void Normalize_MaxWarmupBelowMin_ClampsUpToMin()
         {
             var c = AppConfig.CreateDefault();

@@ -18,7 +18,7 @@ namespace OLock
             {
                 Text = $"{Tr("tray_settings")} - {APP_NAME} {AppVersion}",
                 Width = 480,
-                Height = 422,
+                Height = 454,
                 StartPosition = FormStartPosition.CenterScreen,
                 MinimizeBox = false,
                 MaximizeBox = false,
@@ -73,6 +73,11 @@ namespace OLock
             form.Controls.Add(new Label { Text = "睡眠参数", Left = 10, Top = y + 3, Width = labelW });
             var txtSleepArgs = new TextBox { Left = inputX, Top = y, Width = inputW, Text = config.SleepArguments };
             form.Controls.Add(txtSleepArgs);
+            y += 32;
+
+            // 详细日志
+            var chkVerbose = new CheckBox { Left = inputX, Top = y + 3, Width = inputW, Text = "详细日志 (排查问题时勾选)", Checked = config.LogVerbose };
+            form.Controls.Add(chkVerbose);
             y += 40;
 
             // 按钮
@@ -89,6 +94,7 @@ namespace OLock
                 config.IgnoredRemoteIpPrefixes = txtIgnored.Text.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
                 config.SleepCommand = txtSleepCmd.Text.Trim();
                 config.SleepArguments = txtSleepArgs.Text;
+                config.LogVerbose = chkVerbose.Checked;
                 config.Normalize();
                 SaveSettings();
                 CleanupExpiredEntries(); // 立即按新的保留天数清理

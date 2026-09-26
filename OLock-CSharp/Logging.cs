@@ -61,7 +61,10 @@ namespace OLock
 
         // 详细日志：仅在设置开启"详细日志"后写入
         internal static void LogDebug(string component, string message)
-            => Write("DEBUG", component, message, null);
+        {
+            if (!config.LogVerbose) return;
+            Write("DEBUG", component, message, null);
+        }
 
         // ERROR 自动附带源码位置，便于定位问题代码
         internal static void LogError(string component, string message,

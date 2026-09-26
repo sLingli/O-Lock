@@ -21,6 +21,7 @@ namespace OLock
         public string SleepCommand { get; set; } = "";
         public string SleepArguments { get; set; } = "";
         public int LogRetentionDays { get; set; }
+        public bool LogVerbose { get; set; }
 
         public static AppConfig CreateDefault()
         {
@@ -35,7 +36,8 @@ namespace OLock
                 IgnoredRemoteIpPrefixes = new string[0],
                 SleepCommand = "rundll32.exe",
                 SleepArguments = "powrprof.dll,SetSuspendState 0,1,0",
-                LogRetentionDays = 7
+                LogRetentionDays = 7,
+                LogVerbose = false
             };
         }
 
@@ -126,6 +128,8 @@ namespace OLock
                         if (sleepVal != null) autoSleep = Convert.ToBoolean(sleepVal);
                         var screenOffVal = key.GetValue("AutoScreenOff");
                         if (screenOffVal != null) autoScreenOff = Convert.ToBoolean(screenOffVal);
+                        var verboseVal = key.GetValue("LogVerbose");
+                        if (verboseVal != null) config.LogVerbose = Convert.ToBoolean(verboseVal);
                     }
                 }
                 config.Normalize();
@@ -159,6 +163,7 @@ namespace OLock
                         // 用户偏好
                         key.SetValue("AutoSleep", autoSleep);
                         key.SetValue("AutoScreenOff", autoScreenOff);
+                        key.SetValue("LogVerbose", config.LogVerbose);
                     }
                 }
             }
@@ -205,6 +210,8 @@ namespace OLock
                             config.SleepArguments = fileConfig.SleepArguments;
                         if (fileConfig.LogRetentionDays > 0)
                             config.LogRetentionDays = fileConfig.LogRetentionDays;
+                        if (fileConfig.LogVerbose)
+                            config.LogVerbose = true;
                         LogInfo("配置", $"配置文件覆盖成功: {configPath}");
                         return true;
                     }
