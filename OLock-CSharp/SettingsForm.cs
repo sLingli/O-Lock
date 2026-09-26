@@ -92,7 +92,7 @@ namespace OLock
                 config.Normalize();
                 SaveSettings();
                 CleanupExpiredEntries(); // 立即按新的保留天数清理
-                LogInfo("设置已保存");
+                LogInfo("配置", "设置已保存");
                 form.Close();
             };
 

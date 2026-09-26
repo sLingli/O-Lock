@@ -51,7 +51,7 @@ namespace OLock
             {
                 ToggleAutostart();
                 autostartItem.Checked = IsAutostartEnabled();
-                LogInfo($"开机自启: {(autostartItem.Checked ? "开启" : "关闭")}");
+                LogInfo("应用", $"开机自启: {(autostartItem.Checked ? "开启" : "关闭")}");
             };
 
             var autoSleepItem = new ToolStripMenuItem(Tr("tray_autosleep"))
@@ -65,7 +65,7 @@ namespace OLock
                 if (autoSleep) autoScreenOff = false;
                 UpdateContextMenu();
                 SaveSettings();
-                LogInfo($"自动睡眠: {(autoSleep ? "开启" : "关闭")}");
+                LogInfo("应用", $"自动睡眠: {(autoSleep ? "开启" : "关闭")}");
             };
 
             var autoScreenOffItem = new ToolStripMenuItem(Tr("tray_autoscreenoff"))
@@ -79,7 +79,7 @@ namespace OLock
                 if (autoScreenOff) autoSleep = false;
                 UpdateContextMenu();
                 SaveSettings();
-                LogInfo($"自动关屏: {(autoScreenOff ? "开启" : "关闭")}");
+                LogInfo("应用", $"自动关屏: {(autoScreenOff ? "开启" : "关闭")}");
             };
 
             var settingsItem = new ToolStripMenuItem(Tr("tray_settings"));
@@ -91,7 +91,7 @@ namespace OLock
             var quitItem = new ToolStripMenuItem(Tr("tray_quit"));
             quitItem.Click += (s, e) =>
             {
-                LogInfo("用户退出");
+                LogInfo("应用", "用户退出");
                 SystemEvents.PowerModeChanged -= OnPowerModeChanged;
                 monitorTimer?.Stop();
                 monitorTimer?.Dispose();

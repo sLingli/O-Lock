@@ -82,7 +82,7 @@ namespace OLock
                     return false; // 连接表为空
                 if (ret != ERROR_INSUFFICIENT_BUFFER || size < sizeof(int) + TCP_ROW_SIZE)
                 {
-                    LogError($"GetExtendedTcpTable 获取缓冲区大小失败: ret={ret}, size={size}");
+                    LogError("网络", $"GetExtendedTcpTable 获取缓冲区大小失败: ret={ret}, size={size}");
                     return false;
                 }
 
@@ -105,11 +105,11 @@ namespace OLock
                         break;
                 }
 
-                LogError($"GetExtendedTcpTable 调用失败: ret={ret}");
+                LogError("网络", $"GetExtendedTcpTable 调用失败: ret={ret}");
             }
             catch (Exception ex)
             {
-                LogError($"CheckPhoneConnection 异常: {ex.Message}");
+                LogError("网络", $"CheckPhoneConnection 异常: {Describe(ex)}");
             }
             return false;
         }

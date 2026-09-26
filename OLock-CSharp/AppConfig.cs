@@ -199,14 +199,14 @@ namespace OLock
                             config.SleepArguments = fileConfig.SleepArguments;
                         if (fileConfig.LogRetentionDays > 0)
                             config.LogRetentionDays = fileConfig.LogRetentionDays;
-                        LogInfo($"配置文件覆盖成功: {configPath}");
+                        LogInfo("配置", $"配置文件覆盖成功: {configPath}");
                         return true;
                     }
                 }
             }
             catch (Exception ex)
             {
-                LogError($"配置文件加载失败: {ex.Message}");
+                LogError("配置", $"配置文件加载失败: {Describe(ex)}");
             }
             return false;
         }

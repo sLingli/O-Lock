@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Windows.Forms;
 
 using static OLock.Localization;
@@ -11,6 +12,7 @@ using static OLock.Program;
 namespace OLock
 {
     // 日志：写文件 + 大小轮转 + 按保留天数自动清理 + 内置查看器
+    // 格式: [时间戳] LEVEL: [组件] 消息 (源码位置，仅 ERROR)
     internal static class Logging
     {
         private static readonly object logLock = new object();
@@ -22,10 +24,13 @@ namespace OLock
             logFilePath = Path.Combine(AppContext.BaseDirectory, "olock.log");
         }
 
-        private static void Log(string level, string message)
+        // 写入核心
+        private static void Write(string level, string component, string message, string? location)
         {
             if (logFilePath == null) return;
-            var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {level}: {message}";
+            var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {level}: [{component}] {message}";
+            if (!string.IsNullOrEmpty(location))
+                line += $" ({location})";
             lock (logLock)
             {
                 try
@@ -43,12 +48,37 @@ namespace OLock
                     }
                     File.AppendAllText(logFilePath, line + Environment.NewLine);
                 }
-                catch { }
+                catch { } // 日志自身的失败保持静默，避免递归
             }
         }
 
-        internal static void LogInfo(string msg) => Log("INFO", msg);
-        internal static void LogError(string msg) => Log("ERROR", msg);
+        // 供状态机等经委托调用的路径：不捕获源码位置 (委托调用会拿到错误的捕获点)
+        internal static void Log(string component, string level, string message)
+            => Write(level, component, message, null);
+
+        internal static void LogInfo(string component, string message)
+            => Write("INFO", component, message, null);
+
+        // 详细日志：仅在设置开启"详细日志"后写入
+        internal static void LogDebug(string component, string message)
+            => Write("DEBUG", component, message, null);
+
+        // ERROR 自动附带源码位置，便于定位问题代码
+        internal static void LogError(string component, string message,
+            [CallerFilePath] string file = "", [CallerLineNumber] int line = 0)
+        {
+            string? location = null;
+            if (!string.IsNullOrEmpty(file) && line > 0)
+                location = $"{Path.GetFileName(file)}:{line}";
+            Write("ERROR", component, message, location);
+        }
+
+        // 异常 → 完整文本 (类型 + 消息 + 堆栈)，超长截断
+        internal static string Describe(Exception ex)
+        {
+            var text = ex.ToString();
+            return text.Length <= 2000 ? text : text.Substring(0, 2000) + "…(已截断)";
+        }
 
         // 删除超过保留期的日志行 (config.LogRetentionDays)。
         // 启动时和保存设置后由外壳调用，此后每天首次写日志时自动再清一次。
@@ -67,11 +97,11 @@ namespace OLock
                     return;
 
                 File.WriteAllLines(logFilePath, kept);
-                LogInfo($"日志清理: 删除 {lines.Length - kept.Count} 条过期记录 (保留最近 {config.LogRetentionDays} 天)");
+                LogInfo("日志", $"清理完成: 删除 {lines.Length - kept.Count} 条过期记录 (保留最近 {config.LogRetentionDays} 天)");
             }
             catch (Exception ex)
             {
-                LogError($"日志清理失败: {ex.Message}");
+                LogError("日志", $"日志清理失败: {Describe(ex)}");
             }
         }
 

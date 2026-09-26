@@ -42,7 +42,7 @@ namespace OLock
 
         internal static void TriggerLock()
         {
-            LogInfo("执行锁屏");
+            LogInfo("动作", "执行锁屏");
             LockWorkStation();
 
             if (autoScreenOff)
@@ -52,14 +52,14 @@ namespace OLock
                 {
                     Thread.Sleep(500);
                     SendMessage((IntPtr)HWND_BROADCAST, WM_SYSCOMMAND, (IntPtr)SC_MONITORPOWER, (IntPtr)MONITOR_OFF);
-                    LogInfo("执行关闭屏幕");
+                    LogInfo("动作", "执行关闭屏幕");
                 });
             }
         }
 
         internal static void ExecuteSleep()
         {
-            LogInfo("执行睡眠命令");
+            LogInfo("动作", "执行睡眠命令");
             // 在后台线程执行，避免阻塞 UI
             Task.Run(() =>
             {
@@ -79,7 +79,7 @@ namespace OLock
                 }
                 catch (Exception ex)
                 {
-                    LogError($"睡眠命令执行失败: {ex.Message}");
+                    LogError("动作", $"睡眠命令执行失败: {Describe(ex)}");
                 }
             });
         }

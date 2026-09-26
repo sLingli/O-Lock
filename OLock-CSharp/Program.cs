@@ -79,11 +79,11 @@ namespace OLock
             // 清理超过保留期的日志
             CleanupExpiredEntries();
 
-            LogInfo($"{APP_NAME} v{Application.ProductVersion} 启动, 进程: {config.AppProcessName}, 语言: {currentLang}");
-            LogInfo($"设置加载完成 - 自动睡眠: {autoSleep}, 自动关屏: {autoScreenOff}");
+            LogInfo("应用", $"{APP_NAME} v{Application.ProductVersion} 启动, 进程: {config.AppProcessName}, 语言: {currentLang}");
+            LogInfo("应用", $"设置加载完成 - 自动睡眠: {autoSleep}, 自动关屏: {autoScreenOff}");
 
             // 初始化监控状态机
-            monitor = new MonitorStateMachine(config, LogInfo, LogError);
+            monitor = new MonitorStateMachine(config, msg => LogInfo("监控", msg), msg => Log("监控", "ERROR", msg));
 
             // 初始化托盘图标
             InitTrayIcon();
@@ -105,7 +105,7 @@ namespace OLock
         {
             if (e.Mode == PowerModes.Resume)
             {
-                LogInfo("系统唤醒 (S3 Resume)");
+                LogInfo("电源", "系统唤醒 (S3 Resume)");
                 StartWaitingForApp();
             }
         }
@@ -171,7 +171,7 @@ namespace OLock
             }
             catch (Exception ex)
             {
-                LogError($"MonitorTick 异常: {ex.Message}");
+                LogError("监控", $"MonitorTick 异常: {Describe(ex)}");
             }
         }
 
