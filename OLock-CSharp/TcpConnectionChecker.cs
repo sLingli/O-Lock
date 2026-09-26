@@ -50,7 +50,11 @@ namespace OLock
                         p.Dispose();
                 }
             }
-            catch { return false; }
+            catch (Exception ex)
+            {
+                LogError("网络", $"进程枚举失败: {Describe(ex)}");
+                return false;
+            }
         }
 
         // Checks whether the configured process has an established connection

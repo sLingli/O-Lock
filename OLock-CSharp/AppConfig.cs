@@ -130,7 +130,10 @@ namespace OLock
                 }
                 config.Normalize();
             }
-            catch { }
+            catch (Exception ex)
+            {
+                LogError("配置", $"注册表设置加载失败: {Describe(ex)}");
+            }
         }
 
         internal static void SaveSettings()
@@ -159,7 +162,10 @@ namespace OLock
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                LogError("配置", $"设置保存失败: {Describe(ex)}");
+            }
         }
 
         // 如果存在 JSON 配置文件则加载覆盖，返回 true 表示已加载

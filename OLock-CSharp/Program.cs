@@ -50,6 +50,15 @@ namespace OLock
         [STAThread]
         private static void Main(string[] args)
         {
+            InitLogger();
+
+            // 全局异常兜底：任何未捕获异常都写入日志，避免静默崩溃无迹可查
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += (s, e) =>
+                LogError("应用", $"UI 线程未处理异常: {Describe(e.Exception)}");
+            AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+                LogError("应用", $"未处理异常: {Describe(e.ExceptionObject as Exception ?? new Exception(e.ExceptionObject?.ToString()))}");
+
             Application.EnableVisualStyles();
 
             // 检测系统语言 (供多语言提示使用)
@@ -63,7 +72,6 @@ namespace OLock
                 return;
             }
 
-            InitLogger();
             config = AppConfig.CreateDefault();
 
             // 隐藏控制台窗口
@@ -184,7 +192,11 @@ namespace OLock
                     return key?.GetValue(APP_NAME) != null;
                 }
             }
-            catch { return false; }
+            catch (Exception ex)
+            {
+                LogError("应用", $"读取开机自启状态失败: {Describe(ex)}");
+                return false;
+            }
         }
 
         internal static void ToggleAutostart()
@@ -206,7 +218,10 @@ namespace OLock
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                LogError("应用", $"开机自启切换失败: {Describe(ex)}");
+            }
         }
     }
 }
