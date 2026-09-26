@@ -18,7 +18,7 @@ namespace OLock
             {
                 Text = $"{Tr("tray_settings")} - {APP_NAME} {AppVersion}",
                 Width = 480,
-                Height = 454,
+                Height = 486,
                 StartPosition = FormStartPosition.CenterScreen,
                 MinimizeBox = false,
                 MaximizeBox = false,
@@ -31,6 +31,12 @@ namespace OLock
             form.Controls.Add(new Label { Text = "进程名", Left = 10, Top = y + 3, Width = labelW });
             var txtProcess = new TextBox { Left = inputX, Top = y, Width = inputW, Text = config.AppProcessName };
             form.Controls.Add(txtProcess);
+            y += 32;
+
+            // 连接进程名 (逗号分隔)
+            form.Controls.Add(new Label { Text = "连接进程名", Left = 10, Top = y + 3, Width = labelW });
+            var txtConnProc = new TextBox { Left = inputX, Top = y, Width = inputW, Text = string.Join(",", config.ConnectionProcessNames) };
+            form.Controls.Add(txtConnProc);
             y += 32;
 
             // 离线容忍
@@ -87,6 +93,7 @@ namespace OLock
             saveBtn.Click += (s, e) =>
             {
                 config.AppProcessName = txtProcess.Text.Trim();
+                config.ConnectionProcessNames = txtConnProc.Text.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
                 config.OfflineSeconds = (int)numThreshold.Value;
                 config.WarmupSeconds = (int)numWarmup.Value;
                 config.LogRetentionDays = (int)numRetention.Value;
