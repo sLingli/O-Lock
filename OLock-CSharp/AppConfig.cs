@@ -12,6 +12,7 @@ namespace OLock
     internal class AppConfig
     {
         public string AppProcessName { get; set; } = "";
+        public string[] ConnectionProcessNames { get; set; } = Array.Empty<string>();
         public int OfflineSeconds { get; set; }
         public int WarmupSeconds { get; set; }
         public int MinWarmupSeconds { get; set; }
@@ -28,6 +29,7 @@ namespace OLock
             return new AppConfig
             {
                 AppProcessName = "O+Connect",
+                ConnectionProcessNames = new[] { "pantaChannelService", "O+Connect" },
                 OfflineSeconds = 9,
                 WarmupSeconds = 60,
                 MinWarmupSeconds = 30,
@@ -45,6 +47,10 @@ namespace OLock
         {
             if (string.IsNullOrWhiteSpace(AppProcessName))
                 AppProcessName = "O+Connect";
+
+            // 手机连接可能归 OPPO 家族任一进程所有，列表为空时回退到已知成员
+            if (ConnectionProcessNames == null || ConnectionProcessNames.Length == 0)
+                ConnectionProcessNames = new[] { "pantaChannelService", "O+Connect" };
 
             OfflineSeconds = Clamp(OfflineSeconds, 1, 120, 9);
             MinWarmupSeconds = Clamp(MinWarmupSeconds, 1, 3600, 30);
@@ -97,6 +103,7 @@ namespace OLock
                     {
                         // 配置项
                         var v = key.GetValue("AppProcessName"); if (v != null) config.AppProcessName = v.ToString()!;
+                        v = key.GetValue("ConnectionProcessNames"); if (v != null) config.ConnectionProcessNames = v.ToString()!.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
                         v = key.GetValue("OfflineSeconds");
                         if (v != null)
                         {
@@ -150,6 +157,7 @@ namespace OLock
                     {
                         // 配置项
                         key.SetValue("AppProcessName", config.AppProcessName);
+                        key.SetValue("ConnectionProcessNames", string.Join(",", config.ConnectionProcessNames));
                         key.SetValue("OfflineSeconds", config.OfflineSeconds);
                         key.SetValue("WarmupSeconds", config.WarmupSeconds);
                         key.SetValue("MinWarmupSeconds", config.MinWarmupSeconds);
@@ -196,6 +204,8 @@ namespace OLock
                     {
                         // 用 JSON 值覆盖当前配置（但不覆盖 AutoSleep/AutoScreenOff，它们由菜单控制）
                         config.AppProcessName = fileConfig.AppProcessName ?? config.AppProcessName;
+                        if (fileConfig.ConnectionProcessNames != null && fileConfig.ConnectionProcessNames.Length > 0)
+                            config.ConnectionProcessNames = fileConfig.ConnectionProcessNames;
                         config.OfflineSeconds = fileConfig.OfflineSeconds > 0 ? fileConfig.OfflineSeconds : config.OfflineSeconds;
                         config.MinWarmupSeconds = fileConfig.MinWarmupSeconds > 0 ? fileConfig.MinWarmupSeconds : config.MinWarmupSeconds;
                         config.MaxWarmupSeconds = fileConfig.MaxWarmupSeconds > 0 ? fileConfig.MaxWarmupSeconds : config.MaxWarmupSeconds;

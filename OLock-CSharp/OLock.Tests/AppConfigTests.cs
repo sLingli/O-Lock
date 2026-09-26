@@ -109,6 +109,24 @@ namespace OLock.Tests
         }
 
         [Fact]
+        public void CreateDefault_ConnectionProcessNames_CoversPantaAndConnect()
+        {
+            var names = AppConfig.CreateDefault().ConnectionProcessNames;
+            Assert.Contains("pantaChannelService", names);
+            Assert.Contains("O+Connect", names);
+        }
+
+        [Fact]
+        public void Normalize_EmptyConnectionProcessNames_FallsBackToDefaults()
+        {
+            var c = AppConfig.CreateDefault();
+            c.ConnectionProcessNames = Array.Empty<string>();
+            c.Normalize();
+            Assert.Contains("pantaChannelService", c.ConnectionProcessNames);
+            Assert.Contains("O+Connect", c.ConnectionProcessNames);
+        }
+
+        [Fact]
         public void Normalize_MaxWarmupBelowMin_ClampsUpToMin()
         {
             var c = AppConfig.CreateDefault();
