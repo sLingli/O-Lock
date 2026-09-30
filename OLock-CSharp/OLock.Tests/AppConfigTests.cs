@@ -135,5 +135,46 @@ namespace OLock.Tests
             Assert.Equal(30, c.MaxWarmupSeconds);
             Assert.Equal(30, c.WarmupSeconds); // Clamp(60, 30, 30, 60) → 30
         }
+
+        // 逗号分隔的输入常写成 "a, b"，不去空白会让 GetProcessesByName 永远匹配不上且无报错
+        [Fact]
+        public void Normalize_ConnectionProcessNames_TrimsWhitespaceAndDropsEmptyEntries()
+        {
+            var c = AppConfig.CreateDefault();
+            c.ConnectionProcessNames = new[] { " pantaChannelService ", "", "O+Connect", "   " };
+            c.Normalize();
+            Assert.Equal(new[] { "pantaChannelService", "O+Connect" }, c.ConnectionProcessNames);
+        }
+
+        [Fact]
+        public void Normalize_TrimsIpPrefixLists()
+        {
+            var c = AppConfig.CreateDefault();
+            c.AllowedRemoteIpPrefixes = new[] { " 192.168. ", " 10." };
+            c.IgnoredRemoteIpPrefixes = new[] { " 172.16. " };
+            c.Normalize();
+            Assert.Equal(new[] { "192.168.", "10." }, c.AllowedRemoteIpPrefixes);
+            Assert.Equal(new[] { "172.16." }, c.IgnoredRemoteIpPrefixes);
+        }
+
+        [Fact]
+        public void Normalize_TrimsAppProcessName()
+        {
+            var c = AppConfig.CreateDefault();
+            c.AppProcessName = "  O+Connect  ";
+            c.Normalize();
+            Assert.Equal("O+Connect", c.AppProcessName);
+        }
+
+        // 全是空白项等同于空列表：回退默认，而不是留下一个永不匹配的列表
+        [Fact]
+        public void Normalize_WhitespaceOnlyProcessList_FallsBackToDefaults()
+        {
+            var c = AppConfig.CreateDefault();
+            c.ConnectionProcessNames = new[] { "   ", "" };
+            c.Normalize();
+            Assert.Contains("pantaChannelService", c.ConnectionProcessNames);
+            Assert.Contains("O+Connect", c.ConnectionProcessNames);
+        }
     }
 }
