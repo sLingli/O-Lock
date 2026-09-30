@@ -10,8 +10,10 @@ namespace OLock
     // 应用配置模型
     internal class AppConfig
     {
+        // 主程序 (O+Connect.exe)。连接检测只看它持有的会话连接。
+        // 注意不要改成"OPPO 家族任一进程"：pantaChannelService 持有的是不随互联会话断开的
+        // 常驻入站保活通道，一旦计入，手机关闭互联后仍会被判为在线（v1.3.1 的回归）。
         public string AppProcessName { get; set; } = "";
-        public string[] ConnectionProcessNames { get; set; } = Array.Empty<string>();
         public int OfflineSeconds { get; set; }
         public int WarmupSeconds { get; set; }
         public int MinWarmupSeconds { get; set; }
@@ -28,7 +30,6 @@ namespace OLock
             return new AppConfig
             {
                 AppProcessName = "O+Connect",
-                ConnectionProcessNames = new[] { "pantaChannelService", "O+Connect" },
                 OfflineSeconds = 9,
                 WarmupSeconds = 60,
                 MinWarmupSeconds = 30,
@@ -48,9 +49,6 @@ namespace OLock
                 AppProcessName = "O+Connect";
             else
                 AppProcessName = AppProcessName.Trim();
-
-            // 手机连接可能归 OPPO 家族任一进程所有，列表为空时回退到已知成员
-            ConnectionProcessNames = NormalizeList(ConnectionProcessNames, new[] { "pantaChannelService", "O+Connect" });
 
             OfflineSeconds = Clamp(OfflineSeconds, 1, 120, 9);
             MinWarmupSeconds = Clamp(MinWarmupSeconds, 1, 3600, 30);
@@ -126,9 +124,6 @@ namespace OLock
                     // 不再中断后续全部设置（旧版一个坏值会让其余配置静默回退默认值）。
                     string? text = ReadString(key, "AppProcessName");
                     if (text != null) config.AppProcessName = text;
-
-                    text = ReadString(key, "ConnectionProcessNames");
-                    if (text != null) config.ConnectionProcessNames = SplitList(text);
 
                     int? number = ReadInt(key, "OfflineSeconds");
                     if (number != null)
@@ -244,7 +239,6 @@ namespace OLock
                     {
                         // 配置项
                         key.SetValue("AppProcessName", config.AppProcessName);
-                        key.SetValue("ConnectionProcessNames", string.Join(",", config.ConnectionProcessNames));
                         key.SetValue("OfflineSeconds", config.OfflineSeconds);
                         key.SetValue("WarmupSeconds", config.WarmupSeconds);
                         key.SetValue("MinWarmupSeconds", config.MinWarmupSeconds);

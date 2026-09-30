@@ -109,24 +109,6 @@ namespace OLock.Tests
         }
 
         [Fact]
-        public void CreateDefault_ConnectionProcessNames_CoversPantaAndConnect()
-        {
-            var names = AppConfig.CreateDefault().ConnectionProcessNames;
-            Assert.Contains("pantaChannelService", names);
-            Assert.Contains("O+Connect", names);
-        }
-
-        [Fact]
-        public void Normalize_EmptyConnectionProcessNames_FallsBackToDefaults()
-        {
-            var c = AppConfig.CreateDefault();
-            c.ConnectionProcessNames = Array.Empty<string>();
-            c.Normalize();
-            Assert.Contains("pantaChannelService", c.ConnectionProcessNames);
-            Assert.Contains("O+Connect", c.ConnectionProcessNames);
-        }
-
-        [Fact]
         public void Normalize_MaxWarmupBelowMin_ClampsUpToMin()
         {
             var c = AppConfig.CreateDefault();
@@ -134,16 +116,6 @@ namespace OLock.Tests
             c.Normalize();
             Assert.Equal(30, c.MaxWarmupSeconds);
             Assert.Equal(30, c.WarmupSeconds); // Clamp(60, 30, 30, 60) → 30
-        }
-
-        // 逗号分隔的输入常写成 "a, b"，不去空白会让 GetProcessesByName 永远匹配不上且无报错
-        [Fact]
-        public void Normalize_ConnectionProcessNames_TrimsWhitespaceAndDropsEmptyEntries()
-        {
-            var c = AppConfig.CreateDefault();
-            c.ConnectionProcessNames = new[] { " pantaChannelService ", "", "O+Connect", "   " };
-            c.Normalize();
-            Assert.Equal(new[] { "pantaChannelService", "O+Connect" }, c.ConnectionProcessNames);
         }
 
         [Fact]
@@ -166,15 +138,5 @@ namespace OLock.Tests
             Assert.Equal("O+Connect", c.AppProcessName);
         }
 
-        // 全是空白项等同于空列表：回退默认，而不是留下一个永不匹配的列表
-        [Fact]
-        public void Normalize_WhitespaceOnlyProcessList_FallsBackToDefaults()
-        {
-            var c = AppConfig.CreateDefault();
-            c.ConnectionProcessNames = new[] { "   ", "" };
-            c.Normalize();
-            Assert.Contains("pantaChannelService", c.ConnectionProcessNames);
-            Assert.Contains("O+Connect", c.ConnectionProcessNames);
-        }
     }
 }

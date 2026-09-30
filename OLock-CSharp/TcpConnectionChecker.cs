@@ -62,31 +62,29 @@ namespace OLock
         // 通过 GetExtendedTcpTable 直接查询内核 TCP 连接表，无外部进程、无文本解析
         internal static async Task<bool> CheckPhoneConnectionAsync()
         {
-            // 手机连接可能归 OPPO 家族任一进程所有 (如通信服务 pantaChannelService)，遍历列表收集 PID
-            var pidOwners = new Dictionary<uint, string>();
-            foreach (string name in config.ConnectionProcessNames)
+            // 只认主程序持有的会话连接。pantaChannelService 等进程持有的是不随互联会话
+            // 断开的常驻入站保活通道，计入它们会让"断开互联"之后仍被判为在线。
+            var pids = new HashSet<uint>();
+            foreach (var proc in Process.GetProcessesByName(config.AppProcessName))
             {
-                foreach (var proc in Process.GetProcessesByName(name))
-                {
-                    try { pidOwners.TryAdd((uint)proc.Id, name); }
-                    finally { proc.Dispose(); }
-                }
+                try { pids.Add((uint)proc.Id); }
+                finally { proc.Dispose(); }
             }
 
-            if (pidOwners.Count == 0)
+            if (pids.Count == 0)
             {
-                LogDebug("网络", "连接进程列表内均未运行 (跳过连接检查)");
+                LogDebug("网络", $"{config.AppProcessName} 进程未找到 (跳过连接检查)");
                 return false;
             }
 
             if (config.LogVerbose)
-                LogDebug("网络", $"待匹配 PID: {string.Join(", ", pidOwners.Select(kv => $"{kv.Key}({kv.Value})"))}");
+                LogDebug("网络", $"待匹配 PID: {string.Join(", ", pids.OrderBy(p => p))}");
 
             // 表查询放到后台线程执行，避免阻塞 UI
-            return await Task.Run(() => HasEstablishedPhoneConnection(pidOwners));
+            return await Task.Run(() => HasEstablishedPhoneConnection(pids));
         }
 
-        private static bool HasEstablishedPhoneConnection(Dictionary<uint, string> pidOwners)
+        private static bool HasEstablishedPhoneConnection(HashSet<uint> pids)
         {
             try
             {
@@ -108,7 +106,7 @@ namespace OLock
                     {
                         ret = GetExtendedTcpTable(buffer, ref size, false, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
                         if (ret == NO_ERROR)
-                            return ScanTcpTableForConnection(buffer, size, pidOwners);
+                            return ScanTcpTableForConnection(buffer, size, pids);
                     }
                     finally
                     {
@@ -129,7 +127,7 @@ namespace OLock
             return false;
         }
 
-        private static bool ScanTcpTableForConnection(IntPtr buffer, int size, Dictionary<uint, string> pidOwners)
+        private static bool ScanTcpTableForConnection(IntPtr buffer, int size, HashSet<uint> pids)
         {
             int numEntries = Marshal.ReadInt32(buffer);
             int maxEntries = (size - sizeof(int)) / TCP_ROW_SIZE;
@@ -146,7 +144,7 @@ namespace OLock
                 if ((uint)Marshal.ReadInt32(rowPtr) == MIB_TCP_STATE_ESTAB)
                 {
                     uint pid = (uint)Marshal.ReadInt32(rowPtr + 20);
-                    if (pidOwners.TryGetValue(pid, out string? owner))
+                    if (pids.Contains(pid))
                     {
                         pidEstab++;
                         // 远程地址是网络字节序的 DWORD，低字节即第一个八位组，IPAddress 可直接解析
@@ -154,7 +152,7 @@ namespace OLock
                         if (HasAllowedRemoteIpPrefix(remoteIP))
                         {
                             if (config.LogVerbose)
-                                LogDebug("网络", $"检查: 连接表 {numEntries} 行, 命中 {remoteIP} (PID {pid} = {owner})");
+                                LogDebug("网络", $"检查: 连接表 {numEntries} 行, 命中 {remoteIP} (PID {pid} = {config.AppProcessName})");
                             return true;
                         }
                         if (samples != null && samples.Count < 3)
@@ -165,8 +163,8 @@ namespace OLock
             }
 
             if (samples != null)
-                LogDebug("网络", $"检查: 连接表 {numEntries} 行, 列表内进程 ESTABLISHED {pidEstab} 条" +
-                    (samples.Count > 0 ? $", 未命中 (远程地址样本: {string.Join(", ", samples)})" : ", 无列表内进程的 ESTABLISHED 连接"));
+                LogDebug("网络", $"检查: 连接表 {numEntries} 行, {config.AppProcessName} ESTABLISHED {pidEstab} 条" +
+                    (samples.Count > 0 ? $", 未命中 (远程地址样本: {string.Join(", ", samples)})" : $", 无 {config.AppProcessName} 的 ESTABLISHED 连接"));
             return false;
         }
 

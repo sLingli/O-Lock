@@ -8,7 +8,7 @@
 
 When using **OPPO Connect (PC Connect)**, the native Windows "Dynamic Lock" often fails because the connection occupies the Bluetooth channel, making the signal unstable.
 
-**O-Lock** solves this by monitoring the **TCP connections** of the OPPO Connect processes directly (covering `O+Connect.exe` and its `pantaChannelService.exe` service; the process list is configurable), instead of relying on Bluetooth RSSI. **If file transfer works, O-Lock knows you are there!**
+**O-Lock** solves this by monitoring the **TCP connections** of the OPPO Connect main process (`O+Connect.exe`) directly, instead of relying on Bluetooth RSSI. **If file transfer works, O-Lock knows you are there!**
 
 ### 🧠 How it Works
 
@@ -29,7 +29,7 @@ When using **OPPO Connect (PC Connect)**, the native Windows "Dynamic Lock" ofte
     - 🟡 **Yellow**: App started. Waiting for phone connection...
     - 🟢 **Green**: Phone Online & Guarding.
 4.  **Start on Boot**: Right-click the tray icon -> Check **"Start on Boot"**.
-5.  **Settings**: Right-click the tray icon -> **Settings** to change process names, offline tolerance, warmup, and more.
+5.  **Settings**: Right-click the tray icon -> **Settings** to change the process name, offline tolerance, warmup, and more.
     All settings live in the registry under `HKCU\Software\OLock`. Since **v1.3.2** the `olock.config.json` next to the executable is no longer read.
 
 ### Contributors
