@@ -89,10 +89,12 @@ namespace OLock
             if (handle != IntPtr.Zero)
                 ShowWindow(handle, 0); // SW_HIDE = 0
 
-            // 先从注册表加载全部设置，再用 JSON 覆盖（如果存在）
+            // 旧版 olock.config.json 已不再生效，存在时提示一次
+            LogIfLegacyConfigPresent();
+
+            // 注册表是唯一配置源；Normalize 无条件执行，不因读取异常被跳过
             LoadSettings();
-            if (LoadJsonConfigIfExists())
-                config.Normalize();
+            config.Normalize();
 
             // 清理超过保留期的日志
             CleanupExpiredEntries();
@@ -204,6 +206,24 @@ namespace OLock
             catch (Exception ex)
             {
                 LogError("监控", $"MonitorTick 异常: {Describe(ex)}");
+            }
+        }
+
+        // 旧版 olock.config.json 自 v1.3.2 起不再生效。存在时提示一次，
+        // 免得用户以为设置是从那个文件读的（这正是旧版「改了设置不生效」的症结）。
+        internal static void LogIfLegacyConfigPresent()
+        {
+            try
+            {
+                if (File.Exists(Path.Combine(AppContext.BaseDirectory, CONFIG_FILE_NAME)) ||
+                    File.Exists(Path.Combine(Environment.CurrentDirectory, CONFIG_FILE_NAME)))
+                {
+                    LogInfo("配置", $"检测到旧版配置文件 {CONFIG_FILE_NAME}，该文件已不再生效 (设置请用托盘右键 → 设置, 存于 HKCU\\Software\\OLock)");
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError("配置", $"旧版配置文件探测失败: {Describe(ex)}");
             }
         }
 

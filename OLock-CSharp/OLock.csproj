@@ -22,10 +22,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Update="olock.config.json" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
-
-  <ItemGroup>
     <InternalsVisibleTo Include="OLock.Tests" />
   </ItemGroup>
 

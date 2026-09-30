@@ -39,8 +39,8 @@ jobs:
 
       - name: Package zips
         run: |
-          powershell.exe -NoProfile -Command "Compress-Archive -Path 'dist/Lite/OLock.exe','dist/Lite/olock.config.json' -DestinationPath 'dist/O-Lock-Lite.zip' -Force"
-          powershell.exe -NoProfile -Command "Compress-Archive -Path 'dist/Full/*.dll','dist/Full/OLock.exe','dist/Full/olock.config.json' -DestinationPath 'dist/O-Lock-Full.zip' -Force"
+          powershell.exe -NoProfile -Command "Compress-Archive -Path 'dist/Lite/OLock.exe' -DestinationPath 'dist/O-Lock-Lite.zip' -Force"
+          powershell.exe -NoProfile -Command "Compress-Archive -Path 'dist/Full/*.dll','dist/Full/OLock.exe' -DestinationPath 'dist/O-Lock-Full.zip' -Force"
 
       # 从上一个 tag 到当前的提交记录生成更新日志 (适配直接 push main、不开 PR 的习惯)
       - name: Generate changelog

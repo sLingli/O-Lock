@@ -1,6 +1,4 @@
 using System;
-using System.IO;
-using System.Text.Json;
 using Microsoft.Win32;
 
 using static OLock.Logging;
@@ -90,7 +88,9 @@ namespace OLock
         }
     }
 
-    // 配置持久化：注册表 (HKCU\Software\OLock) + 可选 JSON 文件覆盖
+    // 配置持久化：注册表 (HKCU\Software\OLock) 是唯一配置源。
+    // 钳制不放在 LoadSettings 里，由调用方在其后调用 config.Normalize()，
+    // 否则读取过程中的异常会把钳制一起跳过。
     internal static class AppConfigStorage
     {
         internal static void LoadSettings()
@@ -139,7 +139,6 @@ namespace OLock
                         if (verboseVal != null) config.LogVerbose = Convert.ToBoolean(verboseVal);
                     }
                 }
-                config.Normalize();
             }
             catch (Exception ex)
             {
@@ -179,59 +178,6 @@ namespace OLock
             {
                 LogError("配置", $"设置保存失败: {Describe(ex)}");
             }
-        }
-
-        // 如果存在 JSON 配置文件则加载覆盖，返回 true 表示已加载
-        internal static bool LoadJsonConfigIfExists()
-        {
-            string configPath = Path.Combine(AppContext.BaseDirectory, CONFIG_FILE_NAME);
-            try
-            {
-                if (!File.Exists(configPath))
-                    configPath = Path.Combine(Environment.CurrentDirectory, CONFIG_FILE_NAME);
-
-                if (File.Exists(configPath))
-                {
-                    var options = new JsonSerializerOptions
-                    {
-                        PropertyNameCaseInsensitive = true,
-                        ReadCommentHandling = JsonCommentHandling.Skip,
-                        AllowTrailingCommas = true
-                    };
-
-                    AppConfig? fileConfig = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(configPath), options);
-                    if (fileConfig != null)
-                    {
-                        // 用 JSON 值覆盖当前配置（但不覆盖 AutoSleep/AutoScreenOff，它们由菜单控制）
-                        config.AppProcessName = fileConfig.AppProcessName ?? config.AppProcessName;
-                        if (fileConfig.ConnectionProcessNames != null && fileConfig.ConnectionProcessNames.Length > 0)
-                            config.ConnectionProcessNames = fileConfig.ConnectionProcessNames;
-                        config.OfflineSeconds = fileConfig.OfflineSeconds > 0 ? fileConfig.OfflineSeconds : config.OfflineSeconds;
-                        config.MinWarmupSeconds = fileConfig.MinWarmupSeconds > 0 ? fileConfig.MinWarmupSeconds : config.MinWarmupSeconds;
-                        config.MaxWarmupSeconds = fileConfig.MaxWarmupSeconds > 0 ? fileConfig.MaxWarmupSeconds : config.MaxWarmupSeconds;
-                        config.WarmupSeconds = fileConfig.WarmupSeconds > 0 ? fileConfig.WarmupSeconds : config.WarmupSeconds;
-                        if (fileConfig.AllowedRemoteIpPrefixes != null && fileConfig.AllowedRemoteIpPrefixes.Length > 0)
-                            config.AllowedRemoteIpPrefixes = fileConfig.AllowedRemoteIpPrefixes;
-                        if (fileConfig.IgnoredRemoteIpPrefixes != null)
-                            config.IgnoredRemoteIpPrefixes = fileConfig.IgnoredRemoteIpPrefixes;
-                        if (!string.IsNullOrWhiteSpace(fileConfig.SleepCommand))
-                            config.SleepCommand = fileConfig.SleepCommand;
-                        if (fileConfig.SleepArguments != null)
-                            config.SleepArguments = fileConfig.SleepArguments;
-                        if (fileConfig.LogRetentionDays > 0)
-                            config.LogRetentionDays = fileConfig.LogRetentionDays;
-                        if (fileConfig.LogVerbose)
-                            config.LogVerbose = true;
-                        LogInfo("配置", $"配置文件覆盖成功: {configPath}");
-                        return true;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                LogError("配置", $"配置文件加载失败: {Describe(ex)}");
-            }
-            return false;
         }
     }
 }
