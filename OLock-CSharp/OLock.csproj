@@ -15,6 +15,12 @@
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <!-- 自包含单文件压缩: Full 包 153MB -> 约 62MB，启动多几十毫秒解压（仅独立部署支持压缩） -->
     <EnableCompressionInSingleFile Condition="'$(SelfContained)' == 'true'">true</EnableCompressionInSingleFile>
+    <!-- 把原生库一起塞进单文件: PublishSingleFile 默认只打包托管程序集，
+         原生 DLL 会散落在 exe 旁边。自包含发布用的 WindowsDesktop 运行时包
+         没有只含 WinForms 的版本，会连带拷出 WPF 的原生负载（wpfgfx 等约 8MB），
+         而本程序是纯 WinForms、从不加载它们。开启后 Full 包变成真正的单文件，
+         代价是启动时把原生库解压到 %TEMP%。 -->
+    <IncludeNativeLibrariesForSelfExtract Condition="'$(SelfContained)' == 'true'">true</IncludeNativeLibrariesForSelfExtract>
     <!-- 只保留英文资源，去掉依赖包自带的其余语言资源 -->
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <!-- 调试符号内嵌进 exe，发布产物不再单独带 .pdb -->
