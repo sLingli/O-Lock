@@ -19,6 +19,15 @@ namespace OLock
         private static NotifyIcon trayIcon = null!;
         private static string? lastIconState;  // 缓存：上次图标状态，避免无变化时重复创建 Icon
 
+        // 与 shell 强制重新同步的间隔 (秒)。NotifyIcon 只在自身缓存变化时才通知 shell，
+        // 所以一次丢失的通知 (例如别的托盘程序崩溃扰动通知区域) 会让托盘永久停在旧状态：
+        // 缓存认为"已经是最新的"，于是再也不向 shell 发任何东西。定期无条件重发，
+        // 把这种卡死的持续时间限制在这个间隔内。
+        private const int ShellResyncSeconds = 30;
+        private static int ticksSinceShellSync;
+
+        private static DateTime lastTrayErrorLog = DateTime.MinValue;  // 托盘报错限流
+
         [DllImport("user32.dll")]
         private static extern bool DestroyIcon(IntPtr handle);
 
@@ -178,8 +187,18 @@ namespace OLock
                 string statusText = GetStatusText();
                 if (statusText.Length > 63) statusText = statusText.Substring(0, 63);
 
-                // 只在状态或文本变化时更新，避免每秒重建 Icon
-                if (currentState != lastIconState || statusText != trayIcon.Text)
+                // 兜底：定期无条件重发一次图标与文字，防止某次通知丢失后永久卡死
+                if (++ticksSinceShellSync >= ShellResyncSeconds)
+                {
+                    ticksSinceShellSync = 0;
+                    lastIconState = null;                 // 迫使下面重建图标
+                    if (trayIcon.Text.Length > 0)
+                        trayIcon.Text = string.Empty;     // 迫使文字重新下发
+                }
+
+                // 图标只取决于状态。文字变化 (离线倒计时每秒都在变) 不该触发图标重建，
+                // 否则等于每秒创建一个 GDI 图标
+                if (currentState != lastIconState)
                 {
                     var oldIcon = trayIcon.Icon;
                     trayIcon.Icon = CreateIcon(currentState);
@@ -189,7 +208,16 @@ namespace OLock
 
                 trayIcon.Text = statusText;
             }
-            catch { }
+            catch (Exception ex)
+            {
+                // 绝不静默吞掉 (托盘卡死曾经就是从这里查不出原因)，但失败会每秒重试，
+                // 所以限流到每分钟最多一条
+                if ((DateTime.Now - lastTrayErrorLog).TotalSeconds >= 60)
+                {
+                    lastTrayErrorLog = DateTime.Now;
+                    LogError("托盘", $"托盘图标更新失败: {Describe(ex)}");
+                }
+            }
         }
     }
 }
