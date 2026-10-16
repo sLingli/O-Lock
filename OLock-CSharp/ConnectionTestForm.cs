@@ -323,6 +323,16 @@ namespace OLock
             _ => Tr("test_reason_check_failed")
         };
 
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                drillTimer.Stop();
+                drillTimer.Dispose();
+            }
+            base.Dispose(disposing);
+        }
+
         private void SetDot(Color color)
         {
             statusDot.DotColor = color;
