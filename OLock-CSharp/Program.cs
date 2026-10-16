@@ -40,6 +40,51 @@ namespace OLock
         // 锁屏/睡眠执行器：使用环境 = RealLockExecutor，测试环境（断开演练）= DryRunLockExecutor
         internal static ILockExecutor lockExecutor = new RealLockExecutor();
 
+        private static readonly ILockExecutor realExecutor = new RealLockExecutor();
+
+        // ==================== 断开测试（由连接测试窗口驱动） ====================
+
+        // 断开测试进行中标志；DrillReported 在模拟执行器被调用时触发（UI 线程），供测试窗口展示报告
+        internal static bool DrillActive { get; private set; }
+        internal static event Action<string>? DrillReported;
+
+        // 开始断开测试：暂停自动监控，锁屏/睡眠切换为模拟执行，并将状态机强制对齐为在线监控态。
+        // 测试期间由测试窗口的定时器作为唯一驱动源 await TickCoreAsync()，杜绝双重 Tick。
+        internal static void StartDrill()
+        {
+            if (DrillActive) return;
+            DrillActive = true;
+            monitorTimer?.Stop();
+            isChecking = false;
+            lockExecutor = new DryRunLockExecutor(msg =>
+            {
+                LogInfo("演练", msg);
+                DrillReported?.Invoke(msg);
+            });
+            monitor.ForceOnlineForDrill();
+            UpdateIcon();
+            LogInfo("演练", "断开测试开始 (自动监控已暂停, 锁屏/睡眠为模拟执行)");
+        }
+
+        // 结束断开测试：恢复真实执行器与自动监控。幂等，任意时刻可安全调用。
+        // 若因离线触发模拟锁屏而结束，进入等待手机重连的安全态，防止测完后未重连被真睡眠/真锁屏。
+        internal static void EndDrill(bool waitReconnect = true)
+        {
+            if (!DrillActive) return;
+            DrillActive = false;
+            lockExecutor = realExecutor;
+            if (!monitor.IsOnline)
+            {
+                if (waitReconnect)
+                    monitor.EnterPostDrillWaitReconnect();
+                else
+                    monitor.ResetToWaiting();
+            }
+            UpdateIcon();
+            monitorTimer?.Start();
+            LogInfo("演练", "断开测试结束 (监控已恢复)");
+        }
+
         // 定时器 (替代后台线程)
         internal static System.Windows.Forms.Timer monitorTimer = null!;
         internal static bool isChecking = false;    // 防止并发执行连接检查
@@ -49,6 +94,7 @@ namespace OLock
         private static string DescribeMonitorState()
         {
             if (monitor.IsWaitingForApp) return "灰色(等待进程)";
+            if (monitor.WaitReconnectAfterDrill) return "灰色(演练后等待重连)";
             if (monitor.IsWarmup) return $"黄色(缓冲期剩 {monitor.WarmupRemaining} 秒)";
             if (monitor.IsOnline) return "绿色(在线)";
             return $"红色(离线 {monitor.OfflineSeconds} 秒)";

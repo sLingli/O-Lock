@@ -37,6 +37,7 @@ namespace OLock
         public bool IsWaitingForApp { get; set; }
         public bool IsWarmup { get; set; }
         public bool IsOnline { get; set; }
+        public bool WaitReconnectAfterDrill { get; set; }
         public int WarmupRemaining { get; set; }
         public int OfflineSeconds { get; set; }
         public bool WasLocked { get; set; }
@@ -48,6 +49,7 @@ namespace OLock
             IsWaitingForApp = true;
             IsWarmup = false;
             IsOnline = false;
+            WaitReconnectAfterDrill = false;
             OfflineSeconds = 0;
             LastCheckSuccessTime = DateTime.MinValue;
             info("状态: 等待应用启动");
@@ -59,10 +61,39 @@ namespace OLock
             int warmupTime = Math.Max(config.MinWarmupSeconds, Math.Min(config.MaxWarmupSeconds, config.WarmupSeconds));
             IsWarmup = true;
             IsWaitingForApp = false;
+            WaitReconnectAfterDrill = false;
             WarmupRemaining = warmupTime;
             OfflineSeconds = 0;
             IsOnline = false;
             info($"状态: 缓冲期开始 ({warmupTime}秒)");
+        }
+
+        // 断开测试开始：强制对齐为在线监控态，确保无论此前处于等待期还是缓冲期，
+        // 一旦手机断开即可直接进入 1..N 秒离线倒数，不会卡在缓冲期。
+        public void ForceOnlineForDrill()
+        {
+            IsWaitingForApp = false;
+            IsWarmup = false;
+            IsOnline = true;
+            WaitReconnectAfterDrill = false;
+            WarmupRemaining = 0;
+            OfflineSeconds = 0;
+            LastCheckSuccessTime = DateTime.Now;
+            info("状态: 断开测试开始，对齐为在线监控态");
+        }
+
+        // 断开测试结束（手机仍处于断开状态）：进入安全的等待重连态，
+        // 期间不累加离线计数、不走缓冲期超时，直到手机重新连接后再恢复正常守护，防止测完后误锁屏/误睡眠。
+        public void EnterPostDrillWaitReconnect()
+        {
+            IsWaitingForApp = false;
+            IsWarmup = false;
+            IsOnline = false;
+            WaitReconnectAfterDrill = true;
+            WarmupRemaining = 0;
+            OfflineSeconds = 0;
+            LastCheckSuccessTime = DateTime.MinValue;
+            info("状态: 断开测试结束，等待手机重新连接后再恢复锁屏守护");
         }
 
         // 每秒推进一次。
@@ -97,6 +128,25 @@ namespace OLock
             // 3. 非空检查结果视为有效检查，盖时间戳（检查完成即更新，与结果无关）
             if (phoneConnected.HasValue)
                 LastCheckSuccessTime = DateTime.Now;
+
+            // 3.5 演练结束后的等待重连保护：手机未重连前保持静默，不触发缓冲期超时或离线锁屏
+            if (WaitReconnectAfterDrill)
+            {
+                if (!appRunning)
+                {
+                    ResetToWaiting();
+                    return MonitorAction.None;
+                }
+
+                if (phoneConnected == true)
+                {
+                    WaitReconnectAfterDrill = false;
+                    IsOnline = true;
+                    OfflineSeconds = 0;
+                    info("状态: 手机已重新连接，恢复正常监控");
+                }
+                return MonitorAction.None;
+            }
 
             // 4. 等待主程序启动阶段 (灰色)
             if (IsWaitingForApp)

@@ -205,8 +205,64 @@ namespace OLock.Tests
             Assert.True(m.IsWaitingForApp);
             Assert.False(m.IsOnline);
             Assert.False(m.IsWarmup);
+            Assert.False(m.WaitReconnectAfterDrill);
             Assert.Equal(0, m.OfflineSeconds);
             Assert.Equal(DateTime.MinValue, m.LastCheckSuccessTime);
+        }
+
+        [Fact]
+        public void ForceOnlineForDrill_FromWarmup_CountsOfflineImmediatelyWhenDisconnected()
+        {
+            var m = Create(offlineSeconds: 3, warmupSeconds: 60);
+            m.Tick(false, appRunning: true, null); // 进入 60 秒缓冲期
+            Assert.True(m.IsWarmup);
+
+            m.ForceOnlineForDrill();
+            Assert.False(m.IsWarmup);
+            Assert.False(m.IsWaitingForApp);
+            Assert.True(m.IsOnline);
+
+            // 手机断开后应立即按 OfflineSeconds 累加，而不是扣减 WarmupRemaining
+            Assert.Equal(MonitorAction.None, m.Tick(false, true, phoneConnected: false));
+            Assert.Equal(1, m.OfflineSeconds);
+            Assert.Equal(MonitorAction.None, m.Tick(false, true, phoneConnected: false));
+            Assert.Equal(2, m.OfflineSeconds);
+            Assert.Equal(MonitorAction.Lock, m.Tick(false, true, phoneConnected: false));
+        }
+
+        [Fact]
+        public void EnterPostDrillWaitReconnect_StaysSafeWhileDisconnected_ResumesWhenReconnected()
+        {
+            var m = Create(offlineSeconds: 3, warmupSeconds: 30);
+            m.EnterPostDrillWaitReconnect();
+            Assert.True(m.WaitReconnectAfterDrill);
+
+            // 演练结束后若手机持续未重连，即使超过缓冲期/离线阈值也绝不触发锁屏
+            for (int i = 0; i < 100; i++)
+            {
+                var action = m.Tick(screenLocked: false, appRunning: true, phoneConnected: false);
+                Assert.Equal(MonitorAction.None, action);
+                Assert.True(m.WaitReconnectAfterDrill);
+            }
+
+            // 手机重连后自动恢复正常在线监控
+            Assert.Equal(MonitorAction.None, m.Tick(false, true, phoneConnected: true));
+            Assert.False(m.WaitReconnectAfterDrill);
+            Assert.True(m.IsOnline);
+
+            // 此后再断开则正常走离线倒计时
+            m.Tick(false, true, phoneConnected: false);
+            Assert.Equal(1, m.OfflineSeconds);
+        }
+
+        [Fact]
+        public void EnterPostDrillWaitReconnect_AppExited_ResetsToWaiting()
+        {
+            var m = Create();
+            m.EnterPostDrillWaitReconnect();
+            m.Tick(screenLocked: false, appRunning: false, phoneConnected: null);
+            Assert.False(m.WaitReconnectAfterDrill);
+            Assert.True(m.IsWaitingForApp);
         }
     }
 }
