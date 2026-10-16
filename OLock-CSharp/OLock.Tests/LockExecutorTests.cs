@@ -1,0 +1,46 @@
+using System.Collections.Generic;
+using OLock;
+
+namespace OLock.Tests
+{
+    // 测试执行器行为：只报告、不动作。报告内容是断开测试完成态的展示来源，必须可读且含"模拟"字样。
+    public class LockExecutorTests
+    {
+        [Fact]
+        public void DryRun_ExecuteLock_ReportsWithoutLocking()
+        {
+            var reports = new List<string>();
+            var executor = new DryRunLockExecutor(reports.Add);
+
+            executor.ExecuteLock();
+
+            var report = Assert.Single(reports);
+            Assert.Contains("模拟", report);
+            Assert.Contains("锁屏", report);
+        }
+
+        [Fact]
+        public void DryRun_ExecuteSleep_ReportsCommandText()
+        {
+            var reports = new List<string>();
+            var executor = new DryRunLockExecutor(reports.Add);
+
+            executor.ExecuteSleep();
+
+            var report = Assert.Single(reports);
+            Assert.Contains("模拟", report);
+            Assert.Contains("睡眠", report);
+            Assert.Contains(Program.config.SleepCommand, report);
+        }
+
+        [Fact]
+        public void DryRun_NullReportCallback_DoesNotThrow()
+        {
+            var executor = new DryRunLockExecutor(null!);
+
+            var ex = Record.Exception(() => executor.ExecuteLock());
+
+            Assert.Null(ex);
+        }
+    }
+}

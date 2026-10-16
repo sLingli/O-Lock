@@ -37,6 +37,9 @@ namespace OLock
         // 监控状态机（纯逻辑，见 MonitorState.cs）
         internal static MonitorStateMachine monitor = null!;
 
+        // 锁屏/睡眠执行器：使用环境 = RealLockExecutor，测试环境（断开演练）= DryRunLockExecutor
+        internal static ILockExecutor lockExecutor = new RealLockExecutor();
+
         // 定时器 (替代后台线程)
         internal static System.Windows.Forms.Timer monitorTimer = null!;
         internal static bool isChecking = false;    // 防止并发执行连接检查
@@ -146,11 +149,13 @@ namespace OLock
 
         // ==================== 核心：定时器驱动的监控外壳 ====================
 
-        // MonitorTick 在 UI 线程上由 Forms.Timer 触发 (每 1 秒)。
-        // 职责：收集事实 (屏幕锁定/进程存活/手机连接) → 交给状态机决策 → 执行动作 → 刷新图标。
-        // 状态流转逻辑全部在 MonitorStateMachine (MonitorState.cs) 中，可单元测试。
-        // 锁屏期间不收集事实 (与旧行为一致)；连接检查用 isChecking 防止上一秒的检查尚未完成。
-        static async void MonitorTick(object? sender, EventArgs e)
+        // MonitorTick 在 UI 线程上由 Forms.Timer 触发 (每 1 秒)，是断开演练之外唯一的驱动源。
+        static async void MonitorTick(object? sender, EventArgs e) => await TickCoreAsync();
+
+        // TickCoreAsync 是监控内核：收集事实 (屏幕锁定/进程存活/手机连接) → 交给状态机决策 → 经执行器执行动作 → 刷新图标。
+        // 返回 Task 供测试窗口 await，保证每次 Tick 完整走完后再读取最新状态。
+        // 锁屏/睡眠的真实动作由 lockExecutor 决定：演练期间被替换为 DryRunLockExecutor，决策链照走但不动真格。
+        internal static async Task TickCoreAsync()
         {
             try
             {
@@ -187,9 +192,9 @@ namespace OLock
                 if (action == MonitorAction.Lock)
                 {
                     if (autoSleep)
-                        ExecuteSleep();
+                        lockExecutor.ExecuteSleep();
                     else
-                        TriggerLock();
+                        lockExecutor.ExecuteLock();
                 }
                 UpdateIcon();
 
