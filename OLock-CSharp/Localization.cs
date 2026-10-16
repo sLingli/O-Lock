@@ -66,6 +66,8 @@ namespace OLock
                 ["test_drill_done"] = "Test complete — command simulated in test mode",
                 ["test_drill_conclusion"] = "Monitoring restored (will resume lock guard once phone reconnects). Screen was not locked and PC did not sleep.",
                 ["test_drill_interrupted"] = "Main process exited or screen state changed; test ended and monitoring restored.",
+                ["test_drill_report_lock"] = "Simulated lock command LockWorkStation (test mode: screen not locked)",
+                ["test_drill_report_sleep"] = "Simulated sleep command {0} {1} (test mode: PC did not sleep)",
                 ["test_footer"] = "Check results are written to the log (Tray right-click → View log)."
             },
             ["zh-Hans"] = new Dictionary<string, string>
@@ -122,6 +124,8 @@ namespace OLock
                 ["test_drill_done"] = "测试完成 — 指令已在测试模式模拟执行",
                 ["test_drill_conclusion"] = "监控已自动恢复（待手机重连后继续锁屏守护）。全程屏幕未锁、电脑未睡眠。",
                 ["test_drill_interrupted"] = "主程序已退出或屏幕状态变化，测试已结束，监控已恢复。",
+                ["test_drill_report_lock"] = "已模拟执行锁屏指令 LockWorkStation（测试模式：屏幕未锁定）",
+                ["test_drill_report_sleep"] = "已模拟执行睡眠指令 {0} {1}（测试模式：电脑未睡眠）",
                 ["test_footer"] = "检测结果会记入日志，可在托盘右键 → 查看日志 中追溯。"
             },
             ["zh-Hant"] = new Dictionary<string, string>
@@ -178,6 +182,8 @@ namespace OLock
                 ["test_drill_done"] = "測試完成 — 指令已在測試模式模擬執行",
                 ["test_drill_conclusion"] = "監控已自動恢復（待手機重連後繼續鎖屏守護）。全程螢幕未鎖、電腦未睡眠。",
                 ["test_drill_interrupted"] = "主程式已結束或螢幕狀態變化，測試已結束，監控已恢復。",
+                ["test_drill_report_lock"] = "已模擬執行鎖屏指令 LockWorkStation（測試模式：螢幕未鎖定）",
+                ["test_drill_report_sleep"] = "已模擬執行睡眠指令 {0} {1}（測試模式：電腦未睡眠）",
                 ["test_footer"] = "檢測結果會記入日誌，可在系統匣右鍵 → 檢視日誌 中追溯。"
             }
         };

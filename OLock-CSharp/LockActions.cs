@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
+using static OLock.Localization;
 using static OLock.Logging;
 using static OLock.Program;
 
@@ -85,22 +86,26 @@ namespace OLock
     internal sealed class DryRunLockExecutor : ILockExecutor
     {
         private readonly Action<string> report;
+        private readonly string sleepCommand;
+        private readonly string sleepArguments;
 
-        public DryRunLockExecutor(Action<string> report)
+        public DryRunLockExecutor(Action<string> report, string? sleepCommand = null, string? sleepArguments = null)
         {
             this.report = report ?? (_ => { });
+            this.sleepCommand = sleepCommand ?? config.SleepCommand;
+            this.sleepArguments = sleepArguments ?? config.SleepArguments;
         }
 
         public void ExecuteLock()
         {
             LogInfo("演练", "模拟执行锁屏指令");
-            report("已模拟执行锁屏指令 LockWorkStation（测试模式：屏幕未锁定）");
+            report(Tr("test_drill_report_lock"));
         }
 
         public void ExecuteSleep()
         {
-            LogInfo("演练", $"模拟执行睡眠指令 {config.SleepCommand} {config.SleepArguments}");
-            report($"已模拟执行睡眠指令 {config.SleepCommand} {config.SleepArguments}（测试模式：电脑未睡眠）");
+            LogInfo("演练", $"模拟执行睡眠指令 {sleepCommand} {sleepArguments}");
+            report(Tr("test_drill_report_sleep", sleepCommand, sleepArguments));
         }
     }
 
