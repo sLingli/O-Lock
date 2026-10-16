@@ -201,6 +201,9 @@ namespace OLock.Tests
             var m = Create();
             m.Tick(false, true, null);
             m.Tick(false, true, true);
+            m.EnterPostDrillWaitReconnect();
+            Assert.True(m.WaitReconnectAfterDrill);
+
             m.ResetToWaiting();
             Assert.True(m.IsWaitingForApp);
             Assert.False(m.IsOnline);
@@ -208,6 +211,27 @@ namespace OLock.Tests
             Assert.False(m.WaitReconnectAfterDrill);
             Assert.Equal(0, m.OfflineSeconds);
             Assert.Equal(DateTime.MinValue, m.LastCheckSuccessTime);
+        }
+
+        [Fact]
+        public void EnterPostDrillWaitReconnect_ScreenUnlock_PreservesWaitReconnectState()
+        {
+            var m = Create();
+            m.EnterPostDrillWaitReconnect();
+            Assert.True(m.WaitReconnectAfterDrill);
+
+            // 模拟锁屏中
+            m.Tick(screenLocked: true, appRunning: true, phoneConnected: null);
+            Assert.True(m.WaitReconnectAfterDrill);
+            Assert.True(m.WasLocked);
+
+            // 模拟解锁瞬间 (WasLocked = true, screenLocked = false)
+            var action = m.Tick(screenLocked: false, appRunning: true, phoneConnected: null);
+            Assert.Equal(MonitorAction.None, action);
+            Assert.False(m.WasLocked);
+            // 演练后重连防护状态必须被完整保留，不能被误重置为 IsWaitingForApp
+            Assert.True(m.WaitReconnectAfterDrill);
+            Assert.False(m.IsWaitingForApp);
         }
 
         [Fact]
