@@ -87,7 +87,7 @@ namespace OLock.Tests
             action = m.Tick(false, true, phoneConnected: false); // 第 60 秒
             Assert.Equal(MonitorAction.Lock, action);
             Assert.True(m.IsWaitingForApp);
-            Assert.Contains(_logs, l => l.Contains("缓冲期超时"));
+            Assert.Contains(_logs, l => l.Contains("Warmup timed out"));
         }
 
         [Fact]
@@ -117,7 +117,7 @@ namespace OLock.Tests
             Assert.Equal(0, m.OfflineSeconds);   // 计数清零
             Assert.False(m.IsWaitingForApp);     // 仍处于监控阶段，等待锁屏后的解锁事件
             Assert.False(m.IsWarmup);
-            Assert.Contains(_logs, l => l.Contains("执行锁屏"));
+            Assert.Contains(_logs, l => l.Contains("executing lock"));
         }
 
         [Fact]
@@ -192,7 +192,7 @@ namespace OLock.Tests
             m.LastCheckSuccessTime = DateTime.Now.AddSeconds(-28); // 超过 9*3=27 秒无检查结果
             m.Tick(false, true, phoneConnected: null);
             Assert.False(m.IsOnline);
-            Assert.Contains(_errors, e => e.Contains("检查结果过期"));
+            Assert.Contains(_errors, e => e.Contains("expired"));
         }
 
         [Fact]

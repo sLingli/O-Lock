@@ -58,12 +58,12 @@ namespace OLock
             isChecking = false;
             lockExecutor = new DryRunLockExecutor(msg =>
             {
-                LogInfo("演练", msg);
+                LogInfo("Drill", msg);
                 DrillReported?.Invoke(msg);
             });
             monitor.ForceOnlineForDrill();
             UpdateIcon();
-            LogInfo("演练", "断开测试开始 (自动监控已暂停, 锁屏/睡眠为模拟执行)");
+            LogInfo("Drill", "Disconnect drill started (auto-monitoring paused, lock/sleep simulated)");
         }
 
         // 结束断开测试：恢复真实执行器与自动监控。幂等，任意时刻可安全调用。
@@ -82,7 +82,7 @@ namespace OLock
             }
             UpdateIcon();
             monitorTimer?.Start();
-            LogInfo("演练", "断开测试结束 (监控已恢复)");
+            LogInfo("Drill", "Disconnect drill ended (monitoring resumed)");
         }
 
         // 定时器 (替代后台线程)
@@ -90,14 +90,14 @@ namespace OLock
         internal static bool isChecking = false;    // 防止并发执行连接检查
         private static int heartbeatTicks = 0;      // 详细模式心跳计数
 
-        // 状态机当前状态的中文描述 (心跳日志用)
+        // 状态机当前状态的英文描述 (心跳日志用)
         private static string DescribeMonitorState()
         {
-            if (monitor.IsWaitingForApp) return "灰色(等待进程)";
-            if (monitor.WaitReconnectAfterDrill) return "灰色(演练后等待重连)";
-            if (monitor.IsWarmup) return $"黄色(缓冲期剩 {monitor.WarmupRemaining} 秒)";
-            if (monitor.IsOnline) return "绿色(在线)";
-            return $"红色(离线 {monitor.OfflineSeconds} 秒)";
+            if (monitor.IsWaitingForApp) return "WaitingForApp";
+            if (monitor.WaitReconnectAfterDrill) return "WaitReconnectAfterDrill";
+            if (monitor.IsWarmup) return $"Warmup({monitor.WarmupRemaining}s)";
+            if (monitor.IsOnline) return "Online";
+            return $"Offline({monitor.OfflineSeconds}s)";
         }
 
         [DllImport("kernel32.dll")]
@@ -114,9 +114,9 @@ namespace OLock
             // 全局异常兜底：任何未捕获异常都写入日志，避免静默崩溃无迹可查
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.ThreadException += (s, e) =>
-                LogError("应用", $"UI 线程未处理异常: {Describe(e.Exception)}");
+                LogError("App", $"Unhandled UI exception: {Describe(e.Exception)}");
             AppDomain.CurrentDomain.UnhandledException += (s, e) =>
-                LogError("应用", $"未处理异常: {Describe(e.ExceptionObject as Exception ?? new Exception(e.ExceptionObject?.ToString()))}");
+                LogError("App", $"Unhandled exception: {Describe(e.ExceptionObject as Exception ?? new Exception(e.ExceptionObject?.ToString()))}");
 
             Application.EnableVisualStyles();
 
@@ -149,11 +149,11 @@ namespace OLock
             // 清理超过保留期的日志
             CleanupExpiredEntries();
 
-            LogInfo("应用", $"{APP_NAME} v{Application.ProductVersion} 启动, 进程: {config.AppProcessName}, 语言: {currentLang}");
-            LogInfo("应用", $"设置加载完成 - 自动睡眠: {autoSleep}, 自动关屏: {autoScreenOff}");
+            LogInfo("App", $"{APP_NAME} v{Application.ProductVersion} started, process: {config.AppProcessName}, language: {currentLang}");
+            LogInfo("App", $"Settings loaded - AutoSleep: {autoSleep}, AutoScreenOff: {autoScreenOff}");
 
             // 初始化监控状态机
-            monitor = new MonitorStateMachine(config, msg => LogInfo("监控", msg), msg => Log("监控", "ERROR", msg));
+            monitor = new MonitorStateMachine(config, msg => LogInfo("Monitor", msg), msg => Log("Monitor", "ERROR", msg));
 
             // 初始化托盘图标
             InitTrayIcon();
@@ -178,7 +178,7 @@ namespace OLock
                     {
                         uiContext.Post(_ =>
                         {
-                            LogInfo("应用", "收到再次启动信号，打开连接测试窗口");
+                            LogInfo("App", "Received secondary launch signal, opening connection test window");
                             ConnectionTestForm.ShowTestWindow();
                         }, null);
                     }
@@ -207,11 +207,11 @@ namespace OLock
         {
             if (e.Mode == PowerModes.Suspend)
             {
-                LogInfo("电源", "系统进入睡眠 (Suspend)");
+                LogInfo("Power", "System entering suspend");
             }
             else if (e.Mode == PowerModes.Resume)
             {
-                LogInfo("电源", "系统唤醒 (S3 Resume) → 重置监控");
+                LogInfo("Power", "System resumed (S3 Resume) -> resetting monitor");
                 StartWaitingForApp();
             }
         }
@@ -284,12 +284,12 @@ namespace OLock
                     int staleSeconds = monitor.LastCheckSuccessTime == DateTime.MinValue
                         ? -1
                         : (int)(DateTime.Now - monitor.LastCheckSuccessTime).TotalSeconds;
-                    LogDebug("监控", $"心跳: {DescribeMonitorState()}, 距上次成功检查 {staleSeconds} 秒, 检查进行中: {isChecking}");
+                    LogDebug("Monitor", $"Heartbeat: {DescribeMonitorState()}, last success check: {staleSeconds}s ago, checking: {isChecking}");
                 }
             }
             catch (Exception ex)
             {
-                LogError("监控", $"MonitorTick 异常: {Describe(ex)}");
+                LogError("Monitor", $"MonitorTick exception: {Describe(ex)}");
             }
         }
 
@@ -302,12 +302,12 @@ namespace OLock
                 if (File.Exists(Path.Combine(AppContext.BaseDirectory, CONFIG_FILE_NAME)) ||
                     File.Exists(Path.Combine(Environment.CurrentDirectory, CONFIG_FILE_NAME)))
                 {
-                    LogInfo("配置", $"检测到旧版配置文件 {CONFIG_FILE_NAME}，该文件已不再生效 (设置请用托盘右键 → 设置, 存于 HKCU\\Software\\OLock)");
+                    LogInfo("Config", $"Legacy config file {CONFIG_FILE_NAME} detected and ignored (settings are stored in HKCU\\Software\\OLock)");
                 }
             }
             catch (Exception ex)
             {
-                LogError("配置", $"旧版配置文件探测失败: {Describe(ex)}");
+                LogError("Config", $"Failed to probe legacy config file: {Describe(ex)}");
             }
         }
 
@@ -322,7 +322,7 @@ namespace OLock
             }
             catch (Exception ex)
             {
-                LogError("应用", $"读取开机自启状态失败: {Describe(ex)}");
+                LogError("App", $"Failed to read autostart status: {Describe(ex)}");
                 return false;
             }
         }
@@ -348,7 +348,7 @@ namespace OLock
             }
             catch (Exception ex)
             {
-                LogError("应用", $"开机自启切换失败: {Describe(ex)}");
+                LogError("App", $"Failed to toggle autostart: {Describe(ex)}");
             }
         }
     }

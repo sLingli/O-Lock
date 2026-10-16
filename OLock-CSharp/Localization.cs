@@ -68,7 +68,18 @@ namespace OLock
                 ["test_drill_interrupted"] = "Main process exited or screen state changed; test ended and monitoring restored.",
                 ["test_drill_report_lock"] = "Simulated lock command LockWorkStation (test mode: screen not locked)",
                 ["test_drill_report_sleep"] = "Simulated sleep command {0} {1} (test mode: PC did not sleep)",
-                ["test_footer"] = "Check results are written to the log (Tray right-click → View log)."
+                ["test_footer"] = "Check results are written to the log (Tray right-click → View log).",
+                ["settings_process_name"] = "Process name",
+                ["settings_offline_threshold"] = "Offline tolerance (s)",
+                ["settings_warmup"] = "Warmup period (s)",
+                ["settings_retention"] = "Log retention (days)",
+                ["settings_allowed_prefixes"] = "Allowed IP prefixes",
+                ["settings_ignored_prefixes"] = "Ignored IP prefixes",
+                ["settings_sleep_command"] = "Sleep command",
+                ["settings_sleep_arguments"] = "Sleep arguments",
+                ["settings_verbose_log"] = "Verbose log (check when troubleshooting)",
+                ["settings_save"] = "Save",
+                ["settings_cancel"] = "Cancel"
             },
             ["zh-Hans"] = new Dictionary<string, string>
             {
@@ -126,7 +137,18 @@ namespace OLock
                 ["test_drill_interrupted"] = "主程序已退出或屏幕状态变化，测试已结束，监控已恢复。",
                 ["test_drill_report_lock"] = "已模拟执行锁屏指令 LockWorkStation（测试模式：屏幕未锁定）",
                 ["test_drill_report_sleep"] = "已模拟执行睡眠指令 {0} {1}（测试模式：电脑未睡眠）",
-                ["test_footer"] = "检测结果会记入日志，可在托盘右键 → 查看日志 中追溯。"
+                ["test_footer"] = "检测结果会记入日志，可在托盘右键 → 查看日志 中追溯。",
+                ["settings_process_name"] = "进程名",
+                ["settings_offline_threshold"] = "离线容忍 (秒)",
+                ["settings_warmup"] = "缓冲期 (秒)",
+                ["settings_retention"] = "日志保留 (天)",
+                ["settings_allowed_prefixes"] = "允许 IP 前缀",
+                ["settings_ignored_prefixes"] = "忽略 IP 前缀",
+                ["settings_sleep_command"] = "睡眠命令",
+                ["settings_sleep_arguments"] = "睡眠参数",
+                ["settings_verbose_log"] = "详细日志 (排查问题时勾选)",
+                ["settings_save"] = "保存",
+                ["settings_cancel"] = "取消"
             },
             ["zh-Hant"] = new Dictionary<string, string>
             {
@@ -184,7 +206,18 @@ namespace OLock
                 ["test_drill_interrupted"] = "主程式已結束或螢幕狀態變化，測試已結束，監控已恢復。",
                 ["test_drill_report_lock"] = "已模擬執行鎖屏指令 LockWorkStation（測試模式：螢幕未鎖定）",
                 ["test_drill_report_sleep"] = "已模擬執行睡眠指令 {0} {1}（測試模式：電腦未睡眠）",
-                ["test_footer"] = "檢測結果會記入日誌，可在系統匣右鍵 → 檢視日誌 中追溯。"
+                ["test_footer"] = "檢測結果會記入日誌，可在系統匣右鍵 → 檢視日誌 中追溯。",
+                ["settings_process_name"] = "處理程序名稱",
+                ["settings_offline_threshold"] = "離線容忍 (秒)",
+                ["settings_warmup"] = "緩衝期 (秒)",
+                ["settings_retention"] = "日誌保留 (天)",
+                ["settings_allowed_prefixes"] = "允許 IP 前綴",
+                ["settings_ignored_prefixes"] = "忽略 IP 前綴",
+                ["settings_sleep_command"] = "睡眠命令",
+                ["settings_sleep_arguments"] = "睡眠參數",
+                ["settings_verbose_log"] = "詳細日誌 (排查問題時勾選)",
+                ["settings_save"] = "儲存",
+                ["settings_cancel"] = "取消"
             }
         };
 

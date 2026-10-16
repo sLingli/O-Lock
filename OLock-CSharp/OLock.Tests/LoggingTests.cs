@@ -10,22 +10,22 @@ namespace OLock.Tests
         {
             string[] lines =
             {
-                "[2026-09-01 08:00:00] INFO: 旧日志",
-                "[2026-09-13 10:00:00] INFO: 新日志",
-                "[2026-09-10 00:00:00] ERROR: 正好在边界上"
+                "[2026-09-01 08:00:00] INFO: Old log",
+                "[2026-09-13 10:00:00] INFO: New log",
+                "[2026-09-10 00:00:00] ERROR: Exactly on boundary"
             };
             var kept = Logging.FilterLines(lines, new DateTime(2026, 9, 10, 0, 0, 0));
 
             Assert.Equal(2, kept.Count);
-            Assert.DoesNotContain(kept, l => l.Contains("旧日志"));
-            Assert.Contains(kept, l => l.Contains("新日志"));
-            Assert.Contains(kept, l => l.Contains("正好在边界上")); // 等于 cutoff 不算过期
+            Assert.DoesNotContain(kept, l => l.Contains("Old log"));
+            Assert.Contains(kept, l => l.Contains("New log"));
+            Assert.Contains(kept, l => l.Contains("Exactly on boundary")); // 等于 cutoff 不算过期
         }
 
         [Fact]
         public void FilterLines_KeepsUnparseableLines()
         {
-            string[] lines = { "被轮转截断的半行日志", "[not-a-date] INFO: x" };
+            string[] lines = { "Truncated log fragment from rotation", "[not-a-date] INFO: x" };
             var kept = Logging.FilterLines(lines, DateTime.Now);
 
             Assert.Equal(2, kept.Count); // 解析不出时间戳的行保守保留
@@ -41,11 +41,11 @@ namespace OLock.Tests
         }
 
         [Theory]
-        [InlineData("[2026-09-23 11:07:50] INFO: [监控] 手机在线", "Info")]
-        [InlineData("[2026-09-23 11:07:58] ERROR: [网络] 调用失败 (TcpConnectionChecker.cs:108)", "Error")]
-        [InlineData("[2026-09-23 11:07:47] DEBUG: [网络] 检查: 87 行", "Debug")]
-        [InlineData("[2026-09-23 11:07:59] WARN: 未知级别", "Unknown")]
-        [InlineData("被轮转截断的半行日志", "Unknown")]
+        [InlineData("[2026-09-23 11:07:50] INFO: [Monitor] Phone online", "Info")]
+        [InlineData("[2026-09-23 11:07:58] ERROR: [Network] Call failed (TcpConnectionChecker.cs:108)", "Error")]
+        [InlineData("[2026-09-23 11:07:47] DEBUG: [Network] Check: 87 lines", "Debug")]
+        [InlineData("[2026-09-23 11:07:59] WARN: Unknown level", "Unknown")]
+        [InlineData("Truncated log fragment from rotation", "Unknown")]
         [InlineData("", "Unknown")]
         public void ParseLevel_ClassifiesLogLines(string line, string expected)
         {

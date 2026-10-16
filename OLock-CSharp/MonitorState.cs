@@ -52,7 +52,7 @@ namespace OLock
             WaitReconnectAfterDrill = false;
             OfflineSeconds = 0;
             LastCheckSuccessTime = DateTime.MinValue;
-            info("状态: 等待应用启动");
+            info("State: Waiting for app to start");
         }
 
         // 进入黄色缓冲期
@@ -65,7 +65,7 @@ namespace OLock
             WarmupRemaining = warmupTime;
             OfflineSeconds = 0;
             IsOnline = false;
-            info($"状态: 缓冲期开始 ({warmupTime}秒)");
+            info($"State: Warmup started ({warmupTime}s)");
         }
 
         // 断开测试开始：强制对齐为在线监控态，确保无论此前处于等待期还是缓冲期，
@@ -79,7 +79,7 @@ namespace OLock
             WarmupRemaining = 0;
             OfflineSeconds = 0;
             LastCheckSuccessTime = DateTime.Now;
-            info("状态: 断开测试开始，对齐为在线监控态");
+            info("State: Drill started, aligned to online monitoring state");
         }
 
         // 断开测试结束（手机仍处于断开状态）：进入安全的等待重连态，
@@ -93,7 +93,7 @@ namespace OLock
             WarmupRemaining = 0;
             OfflineSeconds = 0;
             LastCheckSuccessTime = DateTime.MinValue;
-            info("状态: 断开测试结束，等待手机重新连接后再恢复锁屏守护");
+            info("State: Drill ended, waiting for phone reconnect before resuming lock guard");
         }
 
         // 每秒推进一次。
@@ -105,7 +105,7 @@ namespace OLock
             if (IsOnline && LastCheckSuccessTime != DateTime.MinValue &&
                 (DateTime.Now - LastCheckSuccessTime).TotalSeconds > config.OfflineSeconds * 3)
             {
-                error($"检查结果过期 ({(int)(DateTime.Now - LastCheckSuccessTime).TotalSeconds}秒无结果)，强制标记离线");
+                error($"Check result expired ({(int)(DateTime.Now - LastCheckSuccessTime).TotalSeconds}s without result), forcing offline");
                 IsOnline = false;
             }
 
@@ -113,7 +113,7 @@ namespace OLock
             if (WasLocked && !screenLocked)
             {
                 WasLocked = false;
-                info("屏幕解锁");
+                info("Screen unlocked");
                 if (WaitReconnectAfterDrill)
                 {
                     // 演练后若手机仍未重连，屏幕解锁保持等待重连保护，不降级为缓冲期/常规等待，防止误锁
@@ -123,7 +123,7 @@ namespace OLock
                 return MonitorAction.None;
             }
             if (!WasLocked && screenLocked)
-                info("屏幕锁定");
+                info("Screen locked");
             WasLocked = screenLocked;
 
             // 2. 锁屏期间暂停监控
@@ -148,7 +148,7 @@ namespace OLock
                     WaitReconnectAfterDrill = false;
                     IsOnline = true;
                     OfflineSeconds = 0;
-                    info("状态: 手机已重新连接，恢复正常监控");
+                    info("State: Phone reconnected, normal monitoring resumed");
                 }
                 return MonitorAction.None;
             }
@@ -176,14 +176,14 @@ namespace OLock
                     WarmupRemaining = 0;
                     OfflineSeconds = 0;
                     IsOnline = true;
-                    info("状态: 手机已连接 (缓冲期内)");
+                    info("State: Phone connected (during warmup)");
                 }
                 else if (phoneConnected == false)
                 {
                     WarmupRemaining--;
                     if (WarmupRemaining <= 0)
                     {
-                        info("缓冲期超时，手机未连接");
+                        info("Warmup timed out, phone not connected");
                         ResetToWaiting();
                         return MonitorAction.Lock;
                     }
@@ -200,19 +200,19 @@ namespace OLock
 
             if (phoneConnected == true)
             {
-                if (!IsOnline) info("状态: 手机在线");
+                if (!IsOnline) info("State: Phone online");
                 IsOnline = true;
                 OfflineSeconds = 0;
             }
             else if (phoneConnected == false)
             {
-                if (IsOnline) info("手机离线 (进程运行中, 但无匹配连接)");
+                if (IsOnline) info("Phone offline (process running, but no matching connection)");
                 IsOnline = false;
                 OfflineSeconds++;
 
                 if (OfflineSeconds >= config.OfflineSeconds)
                 {
-                    info($"手机已离线 {OfflineSeconds} 秒，执行锁屏");
+                    info($"Phone offline for {OfflineSeconds}s, executing lock");
                     OfflineSeconds = 0;
                     return MonitorAction.Lock;
                 }

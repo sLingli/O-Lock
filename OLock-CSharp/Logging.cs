@@ -90,7 +90,7 @@ namespace OLock
         internal static string Describe(Exception ex)
         {
             var text = ex.ToString();
-            return text.Length <= 2000 ? text : text.Substring(0, 2000) + "…(已截断)";
+            return text.Length <= 2000 ? text : text.Substring(0, 2000) + "…(truncated)";
         }
 
         // 从日志行解析级别，解析不出返回 Unknown（如轮转截断的半行）
@@ -125,11 +125,11 @@ namespace OLock
                     return;
 
                 File.WriteAllLines(logFilePath, kept);
-                LogInfo("日志", $"清理完成: 删除 {lines.Length - kept.Count} 条过期记录 (保留最近 {config.LogRetentionDays} 天)");
+                LogInfo("Log", $"Cleanup completed: deleted {lines.Length - kept.Count} expired entries (retaining last {config.LogRetentionDays} days)");
             }
             catch (Exception ex)
             {
-                LogError("日志", $"日志清理失败: {Describe(ex)}");
+                LogError("Log", $"Log cleanup failed: {Describe(ex)}");
             }
         }
 

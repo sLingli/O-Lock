@@ -38,7 +38,7 @@ namespace OLock
 
         public void ExecuteLock()
         {
-            LogInfo("动作", "执行锁屏");
+            LogInfo("Action", "Executing screen lock");
             LockWorkStation();
 
             if (autoScreenOff)
@@ -48,14 +48,14 @@ namespace OLock
                 {
                     Thread.Sleep(500);
                     SendMessage((IntPtr)HWND_BROADCAST, WM_SYSCOMMAND, (IntPtr)SC_MONITORPOWER, (IntPtr)MONITOR_OFF);
-                    LogInfo("动作", "执行关闭屏幕");
+                    LogInfo("Action", "Turning off screen");
                 });
             }
         }
 
         public void ExecuteSleep()
         {
-            LogInfo("动作", "执行睡眠命令");
+            LogInfo("Action", "Executing sleep command");
             // 在后台线程执行，避免阻塞 UI
             Task.Run(() =>
             {
@@ -75,7 +75,7 @@ namespace OLock
                 }
                 catch (Exception ex)
                 {
-                    LogError("动作", $"睡眠命令执行失败: {Describe(ex)}");
+                    LogError("Action", $"Sleep command execution failed: {Describe(ex)}");
                 }
             });
         }
@@ -98,13 +98,13 @@ namespace OLock
 
         public void ExecuteLock()
         {
-            LogInfo("演练", "模拟执行锁屏指令");
+            LogInfo("Drill", "Simulating screen lock command");
             report(Tr("test_drill_report_lock"));
         }
 
         public void ExecuteSleep()
         {
-            LogInfo("演练", $"模拟执行睡眠指令 {sleepCommand} {sleepArguments}");
+            LogInfo("Drill", $"Simulating sleep command: {sleepCommand} {sleepArguments}");
             report(Tr("test_drill_report_sleep", sleepCommand, sleepArguments));
         }
     }

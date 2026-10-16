@@ -28,61 +28,61 @@ namespace OLock
             int y = 15, labelW = 120, inputX = 140, inputW = 300;
 
             // 监控进程名
-            form.Controls.Add(new Label { Text = "进程名", Left = 10, Top = y + 3, Width = labelW });
+            form.Controls.Add(new Label { Text = Tr("settings_process_name"), Left = 10, Top = y + 3, Width = labelW });
             var txtProcess = new TextBox { Left = inputX, Top = y, Width = inputW, Text = config.AppProcessName };
             form.Controls.Add(txtProcess);
             y += 32;
 
             // 离线容忍
-            form.Controls.Add(new Label { Text = "离线容忍 (秒)", Left = 10, Top = y + 3, Width = labelW });
+            form.Controls.Add(new Label { Text = Tr("settings_offline_threshold"), Left = 10, Top = y + 3, Width = labelW });
             var numThreshold = new NumericUpDown { Left = inputX, Top = y, Width = inputW, Minimum = 1, Maximum = 120, Value = config.OfflineSeconds };
             form.Controls.Add(numThreshold);
             y += 32;
 
             // 缓冲期
-            form.Controls.Add(new Label { Text = "缓冲期 (秒)", Left = 10, Top = y + 3, Width = labelW });
+            form.Controls.Add(new Label { Text = Tr("settings_warmup"), Left = 10, Top = y + 3, Width = labelW });
             var numWarmup = new NumericUpDown { Left = inputX, Top = y, Width = inputW, Minimum = 1, Maximum = 3600, Value = config.WarmupSeconds };
             form.Controls.Add(numWarmup);
             y += 32;
 
             // 日志保留
-            form.Controls.Add(new Label { Text = "日志保留 (天)", Left = 10, Top = y + 3, Width = labelW });
+            form.Controls.Add(new Label { Text = Tr("settings_retention"), Left = 10, Top = y + 3, Width = labelW });
             var numRetention = new NumericUpDown { Left = inputX, Top = y, Width = inputW, Minimum = 1, Maximum = 365, Value = config.LogRetentionDays };
             form.Controls.Add(numRetention);
             y += 32;
 
             // 允许的 IP 前缀
-            form.Controls.Add(new Label { Text = "允许 IP 前缀", Left = 10, Top = y + 3, Width = labelW });
+            form.Controls.Add(new Label { Text = Tr("settings_allowed_prefixes"), Left = 10, Top = y + 3, Width = labelW });
             var txtAllowed = new TextBox { Left = inputX, Top = y, Width = inputW, Text = string.Join(",", config.AllowedRemoteIpPrefixes) };
             form.Controls.Add(txtAllowed);
             y += 32;
 
             // 忽略的 IP 前缀
-            form.Controls.Add(new Label { Text = "忽略 IP 前缀", Left = 10, Top = y + 3, Width = labelW });
+            form.Controls.Add(new Label { Text = Tr("settings_ignored_prefixes"), Left = 10, Top = y + 3, Width = labelW });
             var txtIgnored = new TextBox { Left = inputX, Top = y, Width = inputW, Text = string.Join(",", config.IgnoredRemoteIpPrefixes) };
             form.Controls.Add(txtIgnored);
             y += 32;
 
             // 睡眠命令
-            form.Controls.Add(new Label { Text = "睡眠命令", Left = 10, Top = y + 3, Width = labelW });
+            form.Controls.Add(new Label { Text = Tr("settings_sleep_command"), Left = 10, Top = y + 3, Width = labelW });
             var txtSleepCmd = new TextBox { Left = inputX, Top = y, Width = inputW, Text = config.SleepCommand };
             form.Controls.Add(txtSleepCmd);
             y += 32;
 
             // 睡眠参数
-            form.Controls.Add(new Label { Text = "睡眠参数", Left = 10, Top = y + 3, Width = labelW });
+            form.Controls.Add(new Label { Text = Tr("settings_sleep_arguments"), Left = 10, Top = y + 3, Width = labelW });
             var txtSleepArgs = new TextBox { Left = inputX, Top = y, Width = inputW, Text = config.SleepArguments };
             form.Controls.Add(txtSleepArgs);
             y += 32;
 
             // 详细日志
-            var chkVerbose = new CheckBox { Left = inputX, Top = y + 3, Width = inputW, Text = "详细日志 (排查问题时勾选)", Checked = config.LogVerbose };
+            var chkVerbose = new CheckBox { Left = inputX, Top = y + 3, Width = inputW, Text = Tr("settings_verbose_log"), Checked = config.LogVerbose };
             form.Controls.Add(chkVerbose);
             y += 40;
 
             // 按钮
-            var saveBtn = new Button { Text = "保存", Width = 80, Left = inputX + inputW - 170, Top = y };
-            var cancelBtn = new Button { Text = "取消", Width = 80, Left = inputX + inputW - 80, Top = y };
+            var saveBtn = new Button { Text = Tr("settings_save"), Width = 80, Left = inputX + inputW - 170, Top = y };
+            var cancelBtn = new Button { Text = Tr("settings_cancel"), Width = 80, Left = inputX + inputW - 80, Top = y };
 
             saveBtn.Click += (s, e) =>
             {
@@ -98,7 +98,7 @@ namespace OLock
                 config.Normalize();
                 SaveSettings();
                 CleanupExpiredEntries(); // 立即按新的保留天数清理
-                LogInfo("配置", "设置已保存");
+                LogInfo("Config", "Settings saved");
                 form.Close();
             };
 

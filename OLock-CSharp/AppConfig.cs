@@ -164,7 +164,7 @@ namespace OLock
             }
             catch (Exception ex)
             {
-                LogError("配置", $"注册表设置加载失败: {Describe(ex)}");
+                LogError("Config", $"Failed to load settings from registry: {Describe(ex)}");
             }
         }
 
@@ -180,7 +180,7 @@ namespace OLock
             }
             catch (Exception ex)
             {
-                LogError("配置", $"读取注册表项 {name} 失败，已跳过该项: {Describe(ex)}");
+                LogError("Config", $"Failed to read registry key {name}, skipping: {Describe(ex)}");
                 return null;
             }
         }
@@ -197,12 +197,12 @@ namespace OLock
                 if (int.TryParse(raw.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
                     return parsed;
 
-                LogError("配置", $"注册表项 {name} 不是合法整数 (实际值: {raw})，已跳过该项");
+                LogError("Config", $"Registry value {name} is not a valid integer (value: {raw}), skipping");
                 return null;
             }
             catch (Exception ex)
             {
-                LogError("配置", $"读取注册表项 {name} 失败，已跳过该项: {Describe(ex)}");
+                LogError("Config", $"Failed to read registry key {name}, skipping: {Describe(ex)}");
                 return null;
             }
         }
@@ -219,12 +219,12 @@ namespace OLock
                 if (bool.TryParse(raw.ToString(), out bool parsed))
                     return parsed;
 
-                LogError("配置", $"注册表项 {name} 不是合法布尔值 (实际值: {raw})，已跳过该项");
+                LogError("Config", $"Registry value {name} is not a valid boolean (value: {raw}), skipping");
                 return null;
             }
             catch (Exception ex)
             {
-                LogError("配置", $"读取注册表项 {name} 失败，已跳过该项: {Describe(ex)}");
+                LogError("Config", $"Failed to read registry key {name}, skipping: {Describe(ex)}");
                 return null;
             }
         }
@@ -258,7 +258,7 @@ namespace OLock
             }
             catch (Exception ex)
             {
-                LogError("配置", $"设置保存失败: {Describe(ex)}");
+                LogError("Config", $"Failed to save settings: {Describe(ex)}");
             }
         }
     }

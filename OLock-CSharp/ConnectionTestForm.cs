@@ -137,15 +137,15 @@ namespace OLock
                 var result = await CheckPhoneConnectionDetailAsync();
                 if (IsDisposed || DrillActive || drillUiActive) return;
 
-                LogInfo("测试", $"手动检测: {(result.IsConnected ? "已连接" : "未连接")} " +
-                    $"(原因: {result.Reason}, 命中: {result.RemoteIp ?? "-"})");
+                LogInfo("Test", $"Manual check: {(result.IsConnected ? "Connected" : "Disconnected")} " +
+                    $"(Reason: {result.Reason}, Hit: {result.RemoteIp ?? "-"})");
                 Render(result);
             }
             catch (Exception ex)
             {
                 if (!IsDisposed && !DrillActive && !drillUiActive)
                 {
-                    LogError("测试", $"连接检测失败: {Describe(ex)}");
+                    LogError("Test", $"Connection check failed: {Describe(ex)}");
                     SetDot(DotRed);
                     statusLabel.Text = Tr("test_disconnected");
                 }
@@ -286,7 +286,7 @@ namespace OLock
             statusLabel.Text = Tr("test_drill_done");
             guideLabel.Text = $"{message}\n{Tr("test_drill_conclusion")}";
             guideButton.Text = Tr("test_drill_start");
-            LogInfo("演练", "断开测试完成，监控已恢复");
+            LogInfo("Drill", "Disconnect drill completed, monitoring resumed");
         }
 
         // 恢复初始引导条（保留"已连接"入口状态）

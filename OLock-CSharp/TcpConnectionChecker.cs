@@ -84,7 +84,7 @@ namespace OLock
             }
             catch (Exception ex)
             {
-                LogError("网络", $"进程枚举失败: {Describe(ex)}");
+                LogError("Network", $"Process enumeration failed: {Describe(ex)}");
                 return false;
             }
         }
@@ -109,12 +109,12 @@ namespace OLock
             if (pids.Count == 0)
             {
                 if (config.LogVerbose)
-                    LogDebug("网络", $"{config.AppProcessName} 进程未找到 (跳过连接检查)");
+                    LogDebug("Network", $"{config.AppProcessName} process not found (skipping connection check)");
                 return false;
             }
 
             if (config.LogVerbose)
-                LogDebug("网络", $"待匹配 PID: {string.Join(", ", pids.OrderBy(p => p))}");
+                LogDebug("Network", $"Matching PIDs: {string.Join(", ", pids.OrderBy(p => p))}");
 
             return await Task.Run(() => CheckPhoneConnectionDetail(pids, collectDiagnostics: config.LogVerbose).IsConnected);
         }
@@ -125,12 +125,12 @@ namespace OLock
             var pids = GetAppPids();
             if (pids.Count == 0)
             {
-                LogDebug("网络", $"{config.AppProcessName} 进程未找到 (跳过连接检查)");
+                LogDebug("Network", $"{config.AppProcessName} process not found (skipping connection check)");
                 return new PhoneConnectionResult { AppRunning = false, Reason = ConnectionReason.ProcessNotRunning };
             }
 
             if (config.LogVerbose)
-                LogDebug("网络", $"待匹配 PID: {string.Join(", ", pids.OrderBy(p => p))}");
+                LogDebug("Network", $"Matching PIDs: {string.Join(", ", pids.OrderBy(p => p))}");
 
             // 表查询放到后台线程执行，避免阻塞 UI
             return await Task.Run(() => CheckPhoneConnectionDetail(pids, collectDiagnostics: true));
@@ -147,7 +147,7 @@ namespace OLock
                     return EvaluateConnection(true, 0, null, null, emptySamples); // 连接表为空
                 if (ret != ERROR_INSUFFICIENT_BUFFER || size < sizeof(int) + TCP_ROW_SIZE)
                 {
-                    LogError("网络", $"GetExtendedTcpTable 获取缓冲区大小失败: ret={ret}, size={size}");
+                    LogError("Network", $"GetExtendedTcpTable buffer size query failed: ret={ret}, size={size}");
                     return new PhoneConnectionResult { AppRunning = true, Reason = ConnectionReason.CheckFailed };
                 }
 
@@ -170,11 +170,11 @@ namespace OLock
                         break;
                 }
 
-                LogError("网络", $"GetExtendedTcpTable 调用失败: ret={ret}");
+                LogError("Network", $"GetExtendedTcpTable call failed: ret={ret}");
             }
             catch (Exception ex)
             {
-                LogError("网络", $"CheckPhoneConnection 异常: {Describe(ex)}");
+                LogError("Network", $"CheckPhoneConnection exception: {Describe(ex)}");
             }
             return new PhoneConnectionResult { AppRunning = true, Reason = ConnectionReason.CheckFailed };
         }
@@ -281,12 +281,12 @@ namespace OLock
             if (hitIp != null)
             {
                 if (config.LogVerbose)
-                    LogDebug("网络", $"检查: 连接表 {numEntries} 行, 命中 {hitIp} (PID {hitPid} = {config.AppProcessName})");
+                    LogDebug("Network", $"Check: TCP table {numEntries} rows, matched {hitIp} (PID {hitPid} = {config.AppProcessName})");
             }
             else if (config.LogVerbose)
             {
-                LogDebug("网络", $"检查: 连接表 {numEntries} 行, {config.AppProcessName} ESTABLISHED {pidEstab} 条" +
-                    (samples != null && samples.Count > 0 ? $", 未命中 (远程地址样本: {string.Join(", ", samples)})" : $", 无 {config.AppProcessName} 的 ESTABLISHED 连接"));
+                LogDebug("Network", $"Check: TCP table {numEntries} rows, {config.AppProcessName} ESTABLISHED {pidEstab} row(s)" +
+                    (samples != null && samples.Count > 0 ? $", not matched (sample remote IPs: {string.Join(", ", samples)})" : $", no ESTABLISHED connections for {config.AppProcessName}"));
             }
 
             return new TcpScanFacts(pidEstab, hitIp, hitPid, samples ?? emptySamples);

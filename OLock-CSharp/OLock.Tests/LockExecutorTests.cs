@@ -12,12 +12,12 @@ namespace OLock.Tests
             var reports = new List<string>();
             var executor = new DryRunLockExecutor(reports.Add);
 
-            Localization.currentLang = "zh-Hans";
+            Localization.currentLang = "en";
             executor.ExecuteLock();
 
             var report = Assert.Single(reports);
-            Assert.Contains("模拟", report);
-            Assert.Contains("锁屏", report);
+            Assert.Contains("Simulated", report);
+            Assert.Contains("lock", report, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("LockWorkStation", report);
         }
 

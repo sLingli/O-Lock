@@ -60,7 +60,7 @@ namespace OLock
             {
                 ToggleAutostart();
                 autostartItem.Checked = IsAutostartEnabled();
-                LogInfo("应用", $"开机自启: {(autostartItem.Checked ? "开启" : "关闭")}");
+                LogInfo("App", $"Autostart: {(autostartItem.Checked ? "enabled" : "disabled")}");
             };
 
             var autoSleepItem = new ToolStripMenuItem(Tr("tray_autosleep"))
@@ -74,7 +74,7 @@ namespace OLock
                 if (autoSleep) autoScreenOff = false;
                 UpdateContextMenu();
                 SaveSettings();
-                LogInfo("应用", $"自动睡眠: {(autoSleep ? "开启" : "关闭")}");
+                LogInfo("App", $"Auto-sleep: {(autoSleep ? "enabled" : "disabled")}");
             };
 
             var autoScreenOffItem = new ToolStripMenuItem(Tr("tray_autoscreenoff"))
@@ -88,7 +88,7 @@ namespace OLock
                 if (autoScreenOff) autoSleep = false;
                 UpdateContextMenu();
                 SaveSettings();
-                LogInfo("应用", $"自动关屏: {(autoScreenOff ? "开启" : "关闭")}");
+                LogInfo("App", $"Auto-screen-off: {(autoScreenOff ? "enabled" : "disabled")}");
             };
 
             var settingsItem = new ToolStripMenuItem(Tr("tray_settings"));
@@ -103,7 +103,7 @@ namespace OLock
             var quitItem = new ToolStripMenuItem(Tr("tray_quit"));
             quitItem.Click += (s, e) =>
             {
-                LogInfo("应用", "用户退出");
+                LogInfo("App", "User quit");
                 SystemEvents.PowerModeChanged -= OnPowerModeChanged;
                 monitorTimer?.Stop();
                 monitorTimer?.Dispose();
@@ -221,7 +221,7 @@ namespace OLock
                 if ((DateTime.Now - lastTrayErrorLog).TotalSeconds >= 60)
                 {
                     lastTrayErrorLog = DateTime.Now;
-                    LogError("托盘", $"托盘图标更新失败: {Describe(ex)}");
+                    LogError("Tray", $"Tray icon update failed: {Describe(ex)}");
                 }
             }
         }
