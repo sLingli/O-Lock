@@ -123,11 +123,12 @@ namespace OLock
             // 检测系统语言 (供多语言提示使用)
             currentLang = GetUILanguage();
 
-            // 单实例保护：已有实例在运行则提示并退出
+            // 单实例保护：已有实例在运行则发信号唤起其「连接测试」窗口并退出
+            using EventWaitHandle showTestEvent = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\OLock_ShowTestWindow");
             using Mutex singleInstance = new Mutex(true, @"Local\OLock_SingleInstance", out bool createdNew);
             if (!createdNew)
             {
-                MessageBox.Show(Tr("tray_already_running", APP_NAME), APP_NAME, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                showTestEvent.Set();
                 return;
             }
 
@@ -166,8 +167,40 @@ namespace OLock
             monitorTimer.Tick += MonitorTick;
             StartWaitingForApp();
 
+            // 监听二次启动信号：当托盘被 Win11 隐藏在溢出区时，再次双击 OLock.exe 即可直接唤起连接测试窗口
+            var uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+            SynchronizationContext.SetSynchronizationContext(uiContext);
+            RegisteredWaitHandle waitHandle = ThreadPool.RegisterWaitForSingleObject(
+                showTestEvent,
+                (_, timedOut) =>
+                {
+                    if (!timedOut)
+                    {
+                        uiContext.Post(_ =>
+                        {
+                            LogInfo("应用", "收到再次启动信号，打开连接测试窗口");
+                            ConnectionTestForm.ShowTestWindow();
+                        }, null);
+                    }
+                },
+                null,
+                -1,
+                executeOnlyOnce: false);
+
+            if (Array.Exists(args, a => string.Equals(a, "--test", StringComparison.OrdinalIgnoreCase)))
+            {
+                uiContext.Post(_ => ConnectionTestForm.ShowTestWindow(), null);
+            }
+
             // 运行消息循环
-            Application.Run();
+            try
+            {
+                Application.Run();
+            }
+            finally
+            {
+                waitHandle.Unregister(null);
+            }
         }
 
         internal static void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)

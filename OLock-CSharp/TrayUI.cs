@@ -94,6 +94,9 @@ namespace OLock
             var settingsItem = new ToolStripMenuItem(Tr("tray_settings"));
             settingsItem.Click += (s, e) => ShowSettingsWindow();
 
+            var testItem = new ToolStripMenuItem(Tr("tray_test_connection"));
+            testItem.Click += (s, e) => ConnectionTestForm.ShowTestWindow();
+
             var logItem = new ToolStripMenuItem(Tr("tray_log"));
             logItem.Click += (s, e) => ShowLogViewer();
 
@@ -114,6 +117,7 @@ namespace OLock
             menu.Items.Add(autoSleepItem);
             menu.Items.Add(autoScreenOffItem);
             menu.Items.Add(settingsItem);
+            menu.Items.Add(testItem);
             menu.Items.Add(logItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(quitItem);
@@ -159,7 +163,7 @@ namespace OLock
 
         private static string GetIconState()
         {
-            if (monitor.IsWaitingForApp) return "waiting";
+            if (monitor.IsWaitingForApp || monitor.WaitReconnectAfterDrill) return "waiting";
             if (monitor.IsWarmup) return "warmup";
             if (monitor.IsOnline) return "online";
             return "offline";
@@ -169,6 +173,8 @@ namespace OLock
         {
             if (monitor.IsWaitingForApp)
                 return Tr("tray_waiting", APP_NAME, config.AppProcessName);
+            if (monitor.WaitReconnectAfterDrill)
+                return Tr("tray_wait_reconnect", APP_NAME);
             if (monitor.IsWarmup)
                 return Tr("tray_warmup", APP_NAME, monitor.WarmupRemaining);
             if (monitor.IsOnline)
