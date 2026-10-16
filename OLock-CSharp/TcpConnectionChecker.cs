@@ -63,6 +63,8 @@ namespace OLock
         // MIB_TCPROW_OWNER_PID 布局: state/localAddr/localPort/remoteAddr/remotePort/owningPid，共 6 个 DWORD (24 字节)
         private const int TCP_ROW_SIZE = 24;
 
+        private static readonly List<string> emptySamples = new List<string>(0);
+
         // Checks whether the configured process is running.
         // 在后台线程执行
         internal static bool IsAppRunning()
@@ -87,24 +89,40 @@ namespace OLock
             }
         }
 
-        // Checks whether the configured process has an established connection
-        // to a configured remote IP prefix.
-        // 通过 GetExtendedTcpTable 直接查询内核 TCP 连接表，无外部进程、无文本解析
-        internal static async Task<bool> CheckPhoneConnectionAsync()
-            => (await CheckPhoneConnectionDetailAsync()).IsConnected;
-
-        // 完整版检测：返回布尔判定之外的诊断详情（进程状态、连接条数、命中信息、未命中样本与归因）
-        internal static async Task<PhoneConnectionResult> CheckPhoneConnectionDetailAsync()
+        private static HashSet<uint> GetAppPids()
         {
-            // 只认主程序持有的会话连接。pantaChannelService 等进程持有的是不随互联会话
-            // 断开的常驻入站保活通道，计入它们会让"断开互联"之后仍被判为在线。
             var pids = new HashSet<uint>();
             foreach (var proc in Process.GetProcessesByName(config.AppProcessName))
             {
                 try { pids.Add((uint)proc.Id); }
                 finally { proc.Dispose(); }
             }
+            return pids;
+        }
 
+        // Checks whether the configured process has an established connection
+        // to a configured remote IP prefix.
+        // 常态监控每秒调用：仅在开启详细日志时收集样本，命中即提前中断扫描，保证主循环零额外堆分配
+        internal static async Task<bool> CheckPhoneConnectionAsync()
+        {
+            var pids = GetAppPids();
+            if (pids.Count == 0)
+            {
+                if (config.LogVerbose)
+                    LogDebug("网络", $"{config.AppProcessName} 进程未找到 (跳过连接检查)");
+                return false;
+            }
+
+            if (config.LogVerbose)
+                LogDebug("网络", $"待匹配 PID: {string.Join(", ", pids.OrderBy(p => p))}");
+
+            return await Task.Run(() => CheckPhoneConnectionDetail(pids, collectDiagnostics: config.LogVerbose).IsConnected);
+        }
+
+        // 完整版检测：供测试窗口使用，无条件收集诊断详情（进程状态、连接条数、命中信息、未命中去重样本与归因）
+        internal static async Task<PhoneConnectionResult> CheckPhoneConnectionDetailAsync()
+        {
+            var pids = GetAppPids();
             if (pids.Count == 0)
             {
                 LogDebug("网络", $"{config.AppProcessName} 进程未找到 (跳过连接检查)");
@@ -115,10 +133,10 @@ namespace OLock
                 LogDebug("网络", $"待匹配 PID: {string.Join(", ", pids.OrderBy(p => p))}");
 
             // 表查询放到后台线程执行，避免阻塞 UI
-            return await Task.Run(() => CheckPhoneConnectionDetail(pids));
+            return await Task.Run(() => CheckPhoneConnectionDetail(pids, collectDiagnostics: true));
         }
 
-        private static PhoneConnectionResult CheckPhoneConnectionDetail(HashSet<uint> pids)
+        private static PhoneConnectionResult CheckPhoneConnectionDetail(HashSet<uint> pids, bool collectDiagnostics)
         {
             try
             {
@@ -126,7 +144,7 @@ namespace OLock
                 int size = 0;
                 uint ret = GetExtendedTcpTable(IntPtr.Zero, ref size, false, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
                 if (ret == NO_ERROR && size <= sizeof(int))
-                    return EvaluateConnection(true, 0, null, null, new List<string>()); // 连接表为空
+                    return EvaluateConnection(true, 0, null, null, emptySamples); // 连接表为空
                 if (ret != ERROR_INSUFFICIENT_BUFFER || size < sizeof(int) + TCP_ROW_SIZE)
                 {
                     LogError("网络", $"GetExtendedTcpTable 获取缓冲区大小失败: ret={ret}, size={size}");
@@ -140,7 +158,7 @@ namespace OLock
                     {
                         ret = GetExtendedTcpTable(buffer, ref size, false, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
                         if (ret == NO_ERROR)
-                            return EvaluateFacts(ScanTcpTableForConnection(buffer, size, pids));
+                            return EvaluateFacts(ScanTcpTableForConnection(buffer, size, pids, collectDiagnostics));
                     }
                     finally
                     {
@@ -163,8 +181,9 @@ namespace OLock
 
         // 归因纯函数：根据扫描产物推断连接状态与原因。无任何系统调用，可单元测试。
         internal static PhoneConnectionResult EvaluateConnection(bool appRunning, int establishedCount,
-            string? hitIp, uint? hitPid, List<string> samples)
+            string? hitIp, uint? hitPid, List<string>? samples)
         {
+            var sampleList = samples ?? emptySamples;
             if (!appRunning)
                 return new PhoneConnectionResult { AppRunning = false, Reason = ConnectionReason.ProcessNotRunning };
 
@@ -187,7 +206,7 @@ namespace OLock
                 {
                     AppRunning = true,
                     EstablishedCount = establishedCount,
-                    SampleRemoteIps = samples,
+                    SampleRemoteIps = sampleList,
                     Reason = ConnectionReason.IpNotMatched
                 };
             }
@@ -195,7 +214,7 @@ namespace OLock
             return new PhoneConnectionResult
             {
                 AppRunning = true,
-                SampleRemoteIps = samples,
+                SampleRemoteIps = sampleList,
                 Reason = ConnectionReason.NoEstablishedConnection
             };
         }
@@ -221,7 +240,7 @@ namespace OLock
         }
 
         // 扫描内核 TCP 连接表，收集主程序进程的连接事实（不做归因，归因在 EvaluateConnection）
-        private static TcpScanFacts ScanTcpTableForConnection(IntPtr buffer, int size, HashSet<uint> pids)
+        private static TcpScanFacts ScanTcpTableForConnection(IntPtr buffer, int size, HashSet<uint> pids, bool collectDiagnostics)
         {
             int numEntries = Marshal.ReadInt32(buffer);
             int maxEntries = (size - sizeof(int)) / TCP_ROW_SIZE;
@@ -231,8 +250,8 @@ namespace OLock
             int pidEstab = 0;
             string? hitIp = null;
             uint? hitPid = null;
-            // 样本始终收集 (≤3 个)：检测详情需要"为什么没命中"的证据
-            var samples = new List<string>();
+            // 样本仅在需要诊断时收集 (≤3 个且去重)
+            var samples = collectDiagnostics ? new List<string>() : null;
 
             IntPtr rowPtr = buffer + sizeof(int);
             for (int i = 0; i < numEntries; i++)
@@ -249,8 +268,10 @@ namespace OLock
                         {
                             hitIp = remoteIP;
                             hitPid = pid;
+                            if (!collectDiagnostics)
+                                break; // 常态无诊断需求：命中即提前退出，避免无谓扫描
                         }
-                        if (hitIp == null && samples.Count < 3)
+                        if (hitIp == null && samples != null && samples.Count < 3 && !samples.Contains(remoteIP))
                             samples.Add(remoteIP);
                     }
                 }
@@ -265,10 +286,10 @@ namespace OLock
             else if (config.LogVerbose)
             {
                 LogDebug("网络", $"检查: 连接表 {numEntries} 行, {config.AppProcessName} ESTABLISHED {pidEstab} 条" +
-                    (samples.Count > 0 ? $", 未命中 (远程地址样本: {string.Join(", ", samples)})" : $", 无 {config.AppProcessName} 的 ESTABLISHED 连接"));
+                    (samples != null && samples.Count > 0 ? $", 未命中 (远程地址样本: {string.Join(", ", samples)})" : $", 无 {config.AppProcessName} 的 ESTABLISHED 连接"));
             }
 
-            return new TcpScanFacts(pidEstab, hitIp, hitPid, samples);
+            return new TcpScanFacts(pidEstab, hitIp, hitPid, samples ?? emptySamples);
         }
 
         private static bool HasAllowedRemoteIpPrefix(string remoteIP)

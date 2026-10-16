@@ -68,5 +68,16 @@ namespace OLock.Tests
             Assert.Equal("10.0.0.8", r.RemoteIp);
             Assert.Equal("Connected", r.Reason.ToString());
         }
+
+        [Fact]
+        public void EvaluateConnection_NullSamples_FallsBackToEmptyList()
+        {
+            var r = TcpConnectionChecker.EvaluateConnection(
+                appRunning: true, establishedCount: 0, hitIp: null, hitPid: null, samples: null);
+
+            Assert.False(r.IsConnected);
+            Assert.NotNull(r.SampleRemoteIps);
+            Assert.Empty(r.SampleRemoteIps);
+        }
     }
 }
