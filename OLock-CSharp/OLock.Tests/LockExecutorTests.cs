@@ -12,25 +12,28 @@ namespace OLock.Tests
             var reports = new List<string>();
             var executor = new DryRunLockExecutor(reports.Add);
 
+            Localization.currentLang = "zh-Hans";
             executor.ExecuteLock();
 
             var report = Assert.Single(reports);
             Assert.Contains("模拟", report);
             Assert.Contains("锁屏", report);
+            Assert.Contains("LockWorkStation", report);
         }
 
         [Fact]
-        public void DryRun_ExecuteSleep_ReportsCommandText()
+        public void DryRun_ExecuteSleep_ReportsConfiguredCommand()
         {
             var reports = new List<string>();
-            var executor = new DryRunLockExecutor(reports.Add);
+            var executor = new DryRunLockExecutor(reports.Add, "my-sleep.exe", "-hibernate");
 
+            Localization.currentLang = "en";
             executor.ExecuteSleep();
 
             var report = Assert.Single(reports);
-            Assert.Contains("模拟", report);
-            Assert.Contains("睡眠", report);
-            Assert.Contains(Program.config.SleepCommand, report);
+            Assert.Contains("Simulated", report);
+            Assert.Contains("my-sleep.exe", report);
+            Assert.Contains("-hibernate", report);
         }
 
         [Fact]
