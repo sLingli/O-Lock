@@ -200,7 +200,16 @@ namespace OLock
             if (drillUiActive)
             {
                 StopDisconnectTest(waitReconnect: true);
-                ShowIdleGuide();
+                if (monitor.WaitReconnectAfterDrill || !monitor.IsOnline)
+                {
+                    guideLabel.Text = Tr("test_guide_disconnected");
+                    guideButton.Visible = false;
+                    _ = CheckNow();
+                }
+                else
+                {
+                    ShowIdleGuide();
+                }
             }
             else
             {
@@ -283,6 +292,7 @@ namespace OLock
         // 恢复初始引导条（保留"已连接"入口状态）
         private void ShowIdleGuide()
         {
+            guideButton.Visible = true;
             guideButton.Text = Tr("test_drill_start");
             guideLabel.Text = Tr("test_guide_connected");
         }
