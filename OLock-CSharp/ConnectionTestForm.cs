@@ -135,7 +135,7 @@ namespace OLock
             try
             {
                 var result = await CheckPhoneConnectionDetailAsync();
-                if (IsDisposed) return;
+                if (IsDisposed || DrillActive || drillUiActive) return;
 
                 LogInfo("测试", $"手动检测: {(result.IsConnected ? "已连接" : "未连接")} " +
                     $"(原因: {result.Reason}, 命中: {result.RemoteIp ?? "-"})");
@@ -143,7 +143,7 @@ namespace OLock
             }
             catch (Exception ex)
             {
-                if (!IsDisposed)
+                if (!IsDisposed && !DrillActive && !drillUiActive)
                 {
                     LogError("测试", $"连接检测失败: {Describe(ex)}");
                     SetDot(DotRed);
@@ -152,7 +152,7 @@ namespace OLock
             }
             finally
             {
-                if (!IsDisposed)
+                if (!IsDisposed && !DrillActive && !drillUiActive)
                 {
                     checkButton.Enabled = true;
                     checkButton.Text = Tr("test_recheck");
