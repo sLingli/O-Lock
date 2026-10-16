@@ -32,5 +32,12 @@ When using **OPPO Connect (PC Connect)**, the native Windows "Dynamic Lock" ofte
 5.  **Settings**: Right-click the tray icon -> **Settings** to change the process name, offline tolerance, warmup, and more.
     All settings live in the registry under `HKCU\Software\OLock`. Since **v1.3.2** the `olock.config.json` next to the executable is no longer read.
 
+### 🧪 Connection Test (new in v1.4.0)
+
+Right-click the tray icon → **Connection test…** (or double-click `OLock.exe` again while running) to verify the tool without waiting for a real lock:
+
+- **Check now**: Automatically checks when opened, or click to re-check anytime. 🟢 When connected, the matched IP and process PID are shown; 🔴 when not, a diagnosis is given (main process not running / no established connection / remote IP doesn't look like the phone).
+- **Disconnect test**: Once the phone is online, start it from the guide inside the window. The test runs the **real monitoring pipeline** (offline countdown, tray icon turns red), but only **simulates** the lock/sleep command when it fires — **the screen never locks and the PC never sleeps**, and monitoring safely waits for the phone to reconnect before resuming lock guard.
+
 ### Contributors
 **Github Copilot**
