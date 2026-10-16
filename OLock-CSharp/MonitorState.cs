@@ -114,6 +114,11 @@ namespace OLock
             {
                 WasLocked = false;
                 info("屏幕解锁");
+                if (WaitReconnectAfterDrill)
+                {
+                    // 演练后若手机仍未重连，屏幕解锁保持等待重连保护，不降级为缓冲期/常规等待，防止误锁
+                    return MonitorAction.None;
+                }
                 ResetToWaiting();
                 return MonitorAction.None;
             }
