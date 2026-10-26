@@ -135,7 +135,7 @@ namespace OLock
             try
             {
                 var result = await CheckPhoneConnectionDetailAsync();
-                if (IsDisposed || DrillActive || drillUiActive) return;
+                if (IsDisposed || !IsHandleCreated || DrillActive || drillUiActive) return;
 
                 LogInfo("Test", $"Manual check: {(result.IsConnected ? "Connected" : "Disconnected")} " +
                     $"(Reason: {result.Reason}, Hit: {result.RemoteIp ?? "-"})");
@@ -143,7 +143,7 @@ namespace OLock
             }
             catch (Exception ex)
             {
-                if (!IsDisposed && !DrillActive && !drillUiActive)
+                if (!IsDisposed && IsHandleCreated && !DrillActive && !drillUiActive)
                 {
                     LogError("Test", $"Connection check failed: {Describe(ex)}");
                     SetDot(DotRed);
@@ -152,7 +152,7 @@ namespace OLock
             }
             finally
             {
-                if (!IsDisposed && !DrillActive && !drillUiActive)
+                if (!IsDisposed && IsHandleCreated && !DrillActive && !drillUiActive)
                 {
                     checkButton.Enabled = true;
                     checkButton.Text = Tr("test_recheck");
@@ -217,7 +217,7 @@ namespace OLock
             }
         }
 
-        private void BeginDisconnectTest()
+        internal void BeginDisconnectTest()
         {
             if (DrillActive) return;
             drillLockHandled = false;
@@ -323,10 +323,23 @@ namespace OLock
             _ => Tr("test_reason_check_failed")
         };
 
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (drillUiActive || DrillActive)
+            {
+                StopDisconnectTest(waitReconnect: true);
+            }
+            base.OnFormClosing(e);
+        }
+
         protected override void Dispose(bool disposing)
         {
             if (disposing)
             {
+                if (drillUiActive || DrillActive)
+                {
+                    StopDisconnectTest(waitReconnect: true);
+                }
                 drillTimer.Stop();
                 drillTimer.Dispose();
             }
