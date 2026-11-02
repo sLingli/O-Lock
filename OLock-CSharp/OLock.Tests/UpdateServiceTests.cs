@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using OLock;
 
 namespace OLock.Tests
@@ -280,6 +282,60 @@ namespace OLock.Tests
             TrayUI.HideTrayIcon();
             var ex = Record.Exception(() => TrayUI.NotifyUpdateAvailable(result));
             Assert.Null(ex);
+        }
+
+        [Fact]
+        public async Task CopyStreamWithTimeoutsAsync_WhenStreamStalls_ThrowsTimeoutException()
+        {
+            using var stalledSource = new StalledReadStream();
+            using var dest = new MemoryStream();
+
+            await Assert.ThrowsAsync<TimeoutException>(() =>
+                UpdateService.CopyStreamWithTimeoutsAsync(
+                    stalledSource,
+                    dest,
+                    totalBytes: 1024,
+                    idleReadTimeout: TimeSpan.FromMilliseconds(60),
+                    overallTimeout: TimeSpan.FromSeconds(10)));
+        }
+
+        [Fact]
+        public async Task CopyStreamWithTimeoutsAsync_WhenCallerCancels_ThrowsOperationCanceledException()
+        {
+            using var stalledSource = new StalledReadStream();
+            using var dest = new MemoryStream();
+            using var userCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(40));
+
+            var ex = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                UpdateService.CopyStreamWithTimeoutsAsync(
+                    stalledSource,
+                    dest,
+                    totalBytes: 1024,
+                    idleReadTimeout: TimeSpan.FromSeconds(10),
+                    overallTimeout: TimeSpan.FromSeconds(30),
+                    cancellationToken: userCts.Token));
+
+            Assert.IsNotType<TimeoutException>(ex);
+        }
+
+        private sealed class StalledReadStream : Stream
+        {
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return 0;
+            }
         }
     }
 }

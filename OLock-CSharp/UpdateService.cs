@@ -59,6 +59,9 @@ namespace OLock
         internal const string LatestReleaseApiUrl = "https://api.github.com/repos/sLingli/O-Lock/releases/latest";
         internal const string ReleasesPageUrl = "https://github.com/sLingli/O-Lock/releases";
 
+        private static readonly TimeSpan DownloadOverallTimeout = TimeSpan.FromMinutes(10);
+        private static readonly TimeSpan DownloadIdleReadTimeout = TimeSpan.FromSeconds(30);
+
         private static readonly HttpClient httpClient = CreateHttpClient();
 
         private static HttpClient CreateHttpClient()
@@ -400,6 +403,51 @@ namespace OLock
             }
         }
 
+        // 带单次读取空闲超时与总传输时长上限的流式拷贝：网络假死抛 TimeoutException，用户主动取消保留 OperationCanceledException
+        internal static async Task CopyStreamWithTimeoutsAsync(
+            Stream source,
+            Stream destination,
+            long totalBytes,
+            TimeSpan idleReadTimeout,
+            TimeSpan overallTimeout,
+            IProgress<UpdateDownloadProgress>? progress = null,
+            CancellationToken cancellationToken = default)
+        {
+            using var overallCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            overallCts.CancelAfter(overallTimeout);
+
+            using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(overallCts.Token);
+
+            byte[] buffer = new byte[65536];
+            long received = 0;
+
+            try
+            {
+                while (true)
+                {
+                    idleCts.CancelAfter(idleReadTimeout);
+                    int read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), idleCts.Token);
+                    if (read <= 0)
+                        break;
+
+                    idleCts.CancelAfter(idleReadTimeout);
+                    await destination.WriteAsync(buffer.AsMemory(0, read), idleCts.Token);
+                    received += read;
+                    progress?.Report(new UpdateDownloadProgress(received, totalBytes));
+                }
+                idleCts.CancelAfter(Timeout.InfiniteTimeSpan);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                if (overallCts.IsCancellationRequested)
+                    throw new TimeoutException($"Download exceeded maximum transfer time ({Math.Max(1, (int)overallTimeout.TotalSeconds)}s).");
+                throw new TimeoutException($"Download stalled (no data received for {Math.Max(1, (int)idleReadTimeout.TotalSeconds)}s).");
+            }
+
+            if (totalBytes > 0 && received != totalBytes)
+                throw new IOException($"Incomplete download ({received} / {totalBytes} bytes).");
+        }
+
         // 流式下载对应压缩包、解压校验，并在原路径原子替换后重启新实例
         internal static async Task DownloadAndApplyUpdateAsync(
             UpdateCheckResult release,
@@ -430,26 +478,46 @@ namespace OLock
                 string zipPath = Path.Combine(stagingDir, release.AssetName ?? "update.zip");
                 LogInfo("Update", $"Downloading update from {release.DownloadUrl} to {zipPath}");
 
-                using (var response = await httpClient.GetAsync(release.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken))
+                using var headerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                headerCts.CancelAfter(DownloadIdleReadTimeout);
+
+                HttpResponseMessage response;
+                try
+                {
+                    response = await httpClient.GetAsync(release.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, headerCts.Token);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException($"Timed out waiting for download server response ({(int)DownloadIdleReadTimeout.TotalSeconds}s).");
+                }
+
+                using (response)
                 {
                     response.EnsureSuccessStatusCode();
                     long totalBytes = response.Content.Headers.ContentLength ?? release.AssetSize;
 
-                    await using var netStream = await response.Content.ReadAsStreamAsync(cancellationToken);
-                    await using var fileStream = new FileStream(zipPath, FileMode.Create, FileAccess.Write, FileShare.None, 65536, useAsync: true);
-
-                    byte[] buffer = new byte[65536];
-                    long received = 0;
-                    int read;
-                    while ((read = await netStream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)) > 0)
+                    Stream netStream;
+                    try
                     {
-                        await fileStream.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
-                        received += read;
-                        progress?.Report(new UpdateDownloadProgress(received, totalBytes));
+                        netStream = await response.Content.ReadAsStreamAsync(headerCts.Token);
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        throw new TimeoutException($"Timed out opening download stream ({(int)DownloadIdleReadTimeout.TotalSeconds}s).");
                     }
 
-                    if (totalBytes > 0 && received != totalBytes)
-                        throw new IOException($"Incomplete download ({received} / {totalBytes} bytes).");
+                    await using (netStream)
+                    await using (var fileStream = new FileStream(zipPath, FileMode.Create, FileAccess.Write, FileShare.None, 65536, useAsync: true))
+                    {
+                        await CopyStreamWithTimeoutsAsync(
+                            netStream,
+                            fileStream,
+                            totalBytes,
+                            DownloadIdleReadTimeout,
+                            DownloadOverallTimeout,
+                            progress,
+                            cancellationToken);
+                    }
                 }
 
                 string extractDir = Path.Combine(stagingDir, "extracted");
