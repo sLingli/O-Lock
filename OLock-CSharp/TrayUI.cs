@@ -125,6 +125,12 @@ namespace OLock
             return menu;
         }
 
+        internal static void HideTrayIcon()
+        {
+            if (trayIcon != null)
+                trayIcon.Visible = false;
+        }
+
         private static void UpdateContextMenu()
         {
             if (trayIcon == null) return;

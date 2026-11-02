@@ -89,6 +89,8 @@ namespace OLock
         internal static System.Windows.Forms.Timer monitorTimer = null!;
         internal static bool isChecking = false;    // 防止并发执行连接检查
         private static int heartbeatTicks = 0;      // 详细模式心跳计数
+        private static Mutex? singleInstanceMutex;
+        private static bool ownsSingleInstanceMutex;
 
         // 状态机当前状态的英文描述 (心跳日志用)
         private static string DescribeMonitorState()
@@ -125,10 +127,20 @@ namespace OLock
 
             // 单实例保护：已有实例在运行则发信号唤起其「连接测试」窗口并退出
             using EventWaitHandle showTestEvent = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\OLock_ShowTestWindow");
-            using Mutex singleInstance = new Mutex(true, @"Local\OLock_SingleInstance", out bool createdNew);
-            if (!createdNew)
+            bool isUpdatedRestart = Array.Exists(args, a => string.Equals(a, "--updated", StringComparison.OrdinalIgnoreCase));
+            using Mutex singleInstance = new Mutex(false, @"Local\OLock_SingleInstance");
+            singleInstanceMutex = singleInstance;
+            try
             {
-                showTestEvent.Set();
+                ownsSingleInstanceMutex = singleInstance.WaitOne(isUpdatedRestart ? TimeSpan.FromSeconds(10) : TimeSpan.Zero);
+            }
+            catch (AbandonedMutexException)
+            {
+                ownsSingleInstanceMutex = true;
+            }
+            if (!ownsSingleInstanceMutex)
+            {
+                if (!isUpdatedRestart) showTestEvent.Set();
                 return;
             }
 
@@ -148,6 +160,9 @@ namespace OLock
 
             // 清理超过保留期的日志
             CleanupExpiredEntries();
+            UpdateService.CleanupUpdateLeftovers();
+            if (isUpdatedRestart)
+                LogInfo("Update", $"Restarted into updated version v{AppVersion}");
 
             LogInfo("App", $"{APP_NAME} v{Application.ProductVersion} started, process: {config.AppProcessName}, language: {currentLang}");
             LogInfo("App", $"Settings loaded - AutoSleep: {autoSleep}, AutoScreenOff: {autoScreenOff}");
@@ -200,6 +215,7 @@ namespace OLock
             finally
             {
                 waitHandle.Unregister(null);
+                ReleaseSingleInstanceMutex();
             }
         }
 
@@ -309,6 +325,51 @@ namespace OLock
             {
                 LogError("Config", $"Failed to probe legacy config file: {Describe(ex)}");
             }
+        }
+
+        internal static void ShutdownForExit()
+        {
+            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            monitorTimer?.Stop();
+            monitorTimer?.Dispose();
+            HideTrayIcon();
+        }
+
+        private static void ReleaseSingleInstanceMutex()
+        {
+            if (!ownsSingleInstanceMutex || singleInstanceMutex == null)
+                return;
+            ownsSingleInstanceMutex = false;
+            try
+            {
+                singleInstanceMutex.ReleaseMutex();
+            }
+            catch
+            {
+            }
+        }
+
+        internal static void RestartIntoUpdatedExecutable(string exePath)
+        {
+            LogInfo("Update", $"Restarting into updated executable: {exePath}");
+            ShutdownForExit();
+            ReleaseSingleInstanceMutex();
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = exePath,
+                Arguments = "--updated",
+                WorkingDirectory = Path.GetDirectoryName(exePath) ?? AppContext.BaseDirectory,
+                UseShellExecute = false
+            });
+            Application.Exit();
+        }
+
+        internal static void ExitForExternalUpdater()
+        {
+            LogInfo("Update", "Exiting current process for external update script");
+            ShutdownForExit();
+            ReleaseSingleInstanceMutex();
+            Application.Exit();
         }
 
         internal static bool IsAutostartEnabled()
