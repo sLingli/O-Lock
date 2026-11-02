@@ -104,6 +104,36 @@ namespace OLock.Tests
             Assert.Equal(63000000, res.AssetSize);
         }
 
+        [Theory]
+        [InlineData("Full", "O-Lock-Lite.zip")]
+        [InlineData("Lite", "O-Lock-Full.zip")]
+        [InlineData("Full", "Source-code.zip")]
+        [InlineData("Lite", "Symbols.zip")]
+        public void ParseLatestReleaseJson_DoesNotCrossFallbackToWrongVariantOrUnrelatedZip(string currentVariant, string uploadedZipName)
+        {
+            string json = $$"""
+            {
+              "tag_name": "v1.6.0",
+              "html_url": "https://github.com/sLingli/O-Lock/releases/tag/v1.6.0",
+              "body": "notes",
+              "assets": [
+                {
+                  "name": "{{uploadedZipName}}",
+                  "size": 170000,
+                  "browser_download_url": "https://github.com/sLingli/O-Lock/releases/download/v1.6.0/{{uploadedZipName}}"
+                }
+              ]
+            }
+            """;
+
+            var res = UpdateService.ParseLatestReleaseJson(json, "1.5.0", currentVariant);
+
+            Assert.Equal("UpdateAvailable", res.Status.ToString());
+            Assert.Null(res.AssetName);
+            Assert.Null(res.DownloadUrl);
+            Assert.Equal(0, res.AssetSize);
+        }
+
         [Fact]
         public void ParseLatestReleaseJson_SameOrOlderVersion_ReportsUpToDate()
         {

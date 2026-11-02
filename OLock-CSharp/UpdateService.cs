@@ -223,9 +223,7 @@ namespace OLock
                 if (root.TryGetProperty("assets", out var assetsProp) && assetsProp.ValueKind == JsonValueKind.Array)
                 {
                     string exactTarget = $"O-Lock-{variant}.zip";
-                    string? fallbackName = null;
-                    string? fallbackUrl = null;
-                    long fallbackSize = 0;
+                    string oppositeVariant = string.Equals(variant, "Full", StringComparison.OrdinalIgnoreCase) ? "Lite" : "Full";
 
                     foreach (var asset in assetsProp.EnumerateArray())
                     {
@@ -240,28 +238,22 @@ namespace OLock
                             continue;
                         }
 
-                        if (string.Equals(name, exactTarget, StringComparison.OrdinalIgnoreCase) ||
-                            name.Contains(variant, StringComparison.OrdinalIgnoreCase))
+                        if (string.Equals(name, exactTarget, StringComparison.OrdinalIgnoreCase))
                         {
                             matchedName = name;
                             matchedUrl = dlUrl;
                             matchedSize = size;
-                            if (string.Equals(name, exactTarget, StringComparison.OrdinalIgnoreCase))
-                                break;
+                            break;
                         }
-                        else if (fallbackUrl == null)
-                        {
-                            fallbackName = name;
-                            fallbackUrl = dlUrl;
-                            fallbackSize = size;
-                        }
-                    }
 
-                    if (matchedUrl == null && fallbackUrl != null)
-                    {
-                        matchedName = fallbackName;
-                        matchedUrl = fallbackUrl;
-                        matchedSize = fallbackSize;
+                        if (matchedUrl == null &&
+                            name.Contains(variant, StringComparison.OrdinalIgnoreCase) &&
+                            !name.Contains(oppositeVariant, StringComparison.OrdinalIgnoreCase))
+                        {
+                            matchedName = name;
+                            matchedUrl = dlUrl;
+                            matchedSize = size;
+                        }
                     }
                 }
 
