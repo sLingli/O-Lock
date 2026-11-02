@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -316,6 +317,41 @@ namespace OLock.Tests
                     cancellationToken: userCts.Token));
 
             Assert.IsNotType<TimeoutException>(ex);
+        }
+
+        [Fact]
+        public async Task FallbackUpdaterScript_HandlesSpecialCharsAndUnicodePaths()
+        {
+            string trickyDir = Path.Combine(Path.GetTempPath(), $"olock_test & (中文) ^100%_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(trickyDir);
+            string targetPath = Path.Combine(trickyDir, "OLock.exe");
+            string pendingPath = targetPath + ".new";
+
+            try
+            {
+                await File.WriteAllTextAsync(targetPath, "old-version");
+                await File.WriteAllTextAsync(pendingPath, "new-version-1.5.0");
+
+                var psi = UpdateService.CreateFallbackUpdaterStartInfo(pendingPath, targetPath, out string batPath);
+                Assert.True(File.Exists(batPath));
+
+                // 测试模式下跳过拉起 GUI 进程并缩短等待间隔，真实跑完 cmd.exe 替换与自清理流程
+                psi.Environment["OLOCK_SKIP_LAUNCH"] = "1";
+                psi.Environment["OLOCK_PING_COUNT"] = "1";
+
+                using var proc = Process.Start(psi);
+                Assert.NotNull(proc);
+                await proc!.WaitForExitAsync();
+
+                Assert.Equal(0, proc.ExitCode);
+                Assert.False(File.Exists(pendingPath));
+                Assert.Equal("new-version-1.5.0", await File.ReadAllTextAsync(targetPath));
+                Assert.False(File.Exists(batPath));
+            }
+            finally
+            {
+                try { Directory.Delete(trickyDir, recursive: true); } catch { }
+            }
         }
 
         private sealed class StalledReadStream : Stream

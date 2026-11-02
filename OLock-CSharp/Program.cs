@@ -388,6 +388,20 @@ namespace OLock
             }
         }
 
+        private static void ScheduleForcedExitWatchdog(int delayMs = 2000)
+        {
+            var watchdog = new Thread(() =>
+            {
+                Thread.Sleep(delayMs);
+                Environment.Exit(0);
+            })
+            {
+                IsBackground = true,
+                Name = "OLockUpdateExitWatchdog"
+            };
+            watchdog.Start();
+        }
+
         internal static void RestartIntoUpdatedExecutable(string exePath)
         {
             LogInfo("Update", $"Restarting into updated executable: {exePath}");
@@ -401,6 +415,7 @@ namespace OLock
                 UseShellExecute = false
             });
             Application.Exit();
+            ScheduleForcedExitWatchdog();
         }
 
         internal static void ExitForExternalUpdater()
@@ -409,6 +424,7 @@ namespace OLock
             ShutdownForExit();
             ReleaseSingleInstanceMutex();
             Application.Exit();
+            ScheduleForcedExitWatchdog();
         }
 
         internal static bool IsAutostartEnabled()

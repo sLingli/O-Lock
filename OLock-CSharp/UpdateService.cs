@@ -381,6 +381,17 @@ namespace OLock
                 {
                     try { Directory.Delete(dir, recursive: true); } catch { }
                 }
+
+                string tempDir = Path.GetTempPath();
+                foreach (string bat in Directory.GetFiles(tempDir, "olock_updater_*.bat"))
+                {
+                    try
+                    {
+                        if ((DateTime.UtcNow - File.GetLastWriteTimeUtc(bat)).TotalMinutes >= 10)
+                            File.Delete(bat);
+                    }
+                    catch { }
+                }
             }
             catch { }
         }
@@ -585,26 +596,60 @@ namespace OLock
             }
         }
 
-        private static void LaunchFallbackUpdaterScript(string pendingExePath, string targetExePath)
+        internal static ProcessStartInfo CreateFallbackUpdaterStartInfo(
+            string pendingExePath,
+            string targetExePath,
+            out string batFilePath)
         {
             string workDir = Path.GetDirectoryName(targetExePath) ?? AppContext.BaseDirectory;
-            // 隐藏命令行循环最多重试 15 次覆盖目标 exe，随后带 --updated 参数启动新实例
-            string script =
-                $"for /L %i in (1,1,15) do (" +
-                $"ping 127.0.0.1 -n 2 >nul & " +
-                $"move /Y \"{pendingExePath}\" \"{targetExePath}\" >nul 2>nul && (" +
-                $"start \"\" /D \"{workDir}\" \"{targetExePath}\" --updated & exit /b 0" +
-                $"))";
+            string tempDir = Path.GetTempPath();
+            batFilePath = Path.Combine(tempDir, $"olock_updater_{Guid.NewGuid():N}.bat");
 
-            Process.Start(new ProcessStartInfo
+            // 纯 ASCII 临时批处理 + 进程环境变量传参：彻底规避中文路径编码错乱及 & ^ ( ) % 等特殊字符转义风险
+            const string scriptContent =
+                "@echo off\r\n" +
+                "set /a tries=0\r\n" +
+                ":retry\r\n" +
+                "set /a tries+=1\r\n" +
+                "ping 127.0.0.1 -n %OLOCK_PING_COUNT% >nul\r\n" +
+                "move /Y \"%OLOCK_PENDING_EXE%\" \"%OLOCK_TARGET_EXE%\" >nul 2>nul\r\n" +
+                "if not errorlevel 1 goto launch\r\n" +
+                "if %tries% LSS 30 goto retry\r\n" +
+                "del /F /Q \"%~f0\" >nul 2>nul & exit 1\r\n" +
+                ":launch\r\n" +
+                "if not \"%OLOCK_SKIP_LAUNCH%\"==\"1\" start \"\" /D \"%OLOCK_WORK_DIR%\" \"%OLOCK_TARGET_EXE%\" --updated\r\n" +
+                "del /F /Q \"%~f0\" >nul 2>nul & exit 0\r\n";
+
+            File.WriteAllText(batFilePath, scriptContent, System.Text.Encoding.ASCII);
+
+            var psi = new ProcessStartInfo
             {
                 FileName = "cmd.exe",
-                Arguments = $"/C \"{script}\"",
-                WorkingDirectory = workDir,
+                Arguments = $"/D /S /C \"\"{batFilePath}\"\"",
+                WorkingDirectory = tempDir,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden,
                 UseShellExecute = false
-            });
+            };
+            psi.Environment["OLOCK_PENDING_EXE"] = pendingExePath;
+            psi.Environment["OLOCK_TARGET_EXE"] = targetExePath;
+            psi.Environment["OLOCK_WORK_DIR"] = workDir;
+            psi.Environment["OLOCK_PING_COUNT"] = "2";
+            return psi;
+        }
+
+        private static void LaunchFallbackUpdaterScript(string pendingExePath, string targetExePath)
+        {
+            var psi = CreateFallbackUpdaterStartInfo(pendingExePath, targetExePath, out string batFilePath);
+            try
+            {
+                Process.Start(psi);
+            }
+            catch
+            {
+                TryDeleteFile(batFilePath);
+                throw;
+            }
         }
     }
 }
