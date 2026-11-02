@@ -111,6 +111,7 @@ namespace OLock
             quitItem.Click += (s, e) =>
             {
                 LogInfo("App", "User quit");
+                CancelStartupUpdateCheck();
                 SystemEvents.PowerModeChanged -= OnPowerModeChanged;
                 monitorTimer?.Stop();
                 monitorTimer?.Dispose();
@@ -149,15 +150,24 @@ namespace OLock
 
         internal static void NotifyUpdateAvailable(UpdateCheckResult result)
         {
+            if (trayIcon == null || !trayIcon.Visible)
+                return;
+
             SetCachedAvailableUpdate(result);
-            if (trayIcon == null) return;
             trayIcon.BalloonTipClicked -= OnBalloonTipClicked;
             trayIcon.BalloonTipClicked += OnBalloonTipClicked;
-            trayIcon.ShowBalloonTip(
-                5000,
-                Tr("tray_update_balloon_title", APP_NAME),
-                Tr("tray_update_balloon_text", result.LatestVersion),
-                ToolTipIcon.Info);
+            try
+            {
+                trayIcon.ShowBalloonTip(
+                    5000,
+                    Tr("tray_update_balloon_title", APP_NAME),
+                    Tr("tray_update_balloon_text", result.LatestVersion),
+                    ToolTipIcon.Info);
+            }
+            catch (Exception ex)
+            {
+                LogError("Tray", $"Failed to show update balloon tip: {Describe(ex)}");
+            }
         }
 
         private static void OnBalloonTipClicked(object? sender, EventArgs e)

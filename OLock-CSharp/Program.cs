@@ -91,6 +91,7 @@ namespace OLock
         private static int heartbeatTicks = 0;      // 详细模式心跳计数
         private static Mutex? singleInstanceMutex;
         private static bool ownsSingleInstanceMutex;
+        private static readonly CancellationTokenSource startupUpdateCts = new CancellationTokenSource();
 
         // 状态机当前状态的英文描述 (心跳日志用)
         private static string DescribeMonitorState()
@@ -336,12 +337,16 @@ namespace OLock
         {
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-                var result = await UpdateService.CheckForUpdateAsync().ConfigureAwait(false);
-                if (result.Status == UpdateCheckStatus.UpdateAvailable)
+                CancellationToken token = startupUpdateCts.Token;
+                await Task.Delay(TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
+                var result = await UpdateService.CheckForUpdateAsync(token).ConfigureAwait(false);
+                if (!token.IsCancellationRequested && result.Status == UpdateCheckStatus.UpdateAvailable)
                 {
                     uiContext.Post(_ => NotifyUpdateAvailable(result), null);
                 }
+            }
+            catch (OperationCanceledException) when (startupUpdateCts.IsCancellationRequested)
+            {
             }
             catch (Exception ex)
             {
@@ -349,8 +354,20 @@ namespace OLock
             }
         }
 
+        internal static void CancelStartupUpdateCheck()
+        {
+            try
+            {
+                startupUpdateCts.Cancel();
+            }
+            catch
+            {
+            }
+        }
+
         internal static void ShutdownForExit()
         {
+            CancelStartupUpdateCheck();
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             monitorTimer?.Stop();
             monitorTimer?.Dispose();

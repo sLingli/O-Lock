@@ -266,5 +266,20 @@ namespace OLock.Tests
                 Localization.currentLang = prev;
             }
         }
+
+        [Fact]
+        public void NotifyUpdateAvailable_WhenTrayNotInitializedOrHidden_DoesNotThrow()
+        {
+            var result = new UpdateCheckResult
+            {
+                Status = UpdateCheckStatus.UpdateAvailable,
+                CurrentVersion = "1.4.1",
+                LatestVersion = "1.5.0"
+            };
+
+            TrayUI.HideTrayIcon();
+            var ex = Record.Exception(() => TrayUI.NotifyUpdateAvailable(result));
+            Assert.Null(ex);
+        }
     }
 }
