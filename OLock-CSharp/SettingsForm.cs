@@ -18,7 +18,7 @@ namespace OLock
             {
                 Text = $"{Tr("tray_settings")} - {APP_NAME} {AppVersion}",
                 Width = 480,
-                Height = 454,
+                Height = 484,
                 StartPosition = FormStartPosition.CenterScreen,
                 MinimizeBox = false,
                 MaximizeBox = false,
@@ -78,6 +78,11 @@ namespace OLock
             // 详细日志
             var chkVerbose = new CheckBox { Left = inputX, Top = y + 3, Width = inputW, Text = Tr("settings_verbose_log"), Checked = config.LogVerbose };
             form.Controls.Add(chkVerbose);
+            y += 30;
+
+            // 启动时自动检查更新
+            var chkCheckUpdates = new CheckBox { Left = inputX, Top = y + 3, Width = inputW, Text = Tr("settings_check_updates"), Checked = config.CheckUpdatesOnStartup };
+            form.Controls.Add(chkCheckUpdates);
             y += 40;
 
             // 按钮
@@ -95,6 +100,7 @@ namespace OLock
                 config.SleepCommand = txtSleepCmd.Text.Trim();
                 config.SleepArguments = txtSleepArgs.Text;
                 config.LogVerbose = chkVerbose.Checked;
+                config.CheckUpdatesOnStartup = chkCheckUpdates.Checked;
                 config.Normalize();
                 SaveSettings();
                 CleanupExpiredEntries(); // 立即按新的保留天数清理

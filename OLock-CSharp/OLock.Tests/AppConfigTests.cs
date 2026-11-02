@@ -109,6 +109,12 @@ namespace OLock.Tests
         }
 
         [Fact]
+        public void CreateDefault_CheckUpdatesOnStartup_IsEnabled()
+        {
+            Assert.True(AppConfig.CreateDefault().CheckUpdatesOnStartup);
+        }
+
+        [Fact]
         public void Normalize_MaxWarmupBelowMin_ClampsUpToMin()
         {
             var c = AppConfig.CreateDefault();

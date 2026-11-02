@@ -78,6 +78,7 @@ namespace OLock
                 ["settings_sleep_command"] = "Sleep command",
                 ["settings_sleep_arguments"] = "Sleep arguments",
                 ["settings_verbose_log"] = "Verbose log (check when troubleshooting)",
+                ["settings_check_updates"] = "Check for updates on startup",
                 ["settings_save"] = "Save",
                 ["settings_cancel"] = "Cancel"
             },
@@ -147,6 +148,7 @@ namespace OLock
                 ["settings_sleep_command"] = "睡眠命令",
                 ["settings_sleep_arguments"] = "睡眠参数",
                 ["settings_verbose_log"] = "详细日志 (排查问题时勾选)",
+                ["settings_check_updates"] = "启动时自动检查更新",
                 ["settings_save"] = "保存",
                 ["settings_cancel"] = "取消"
             },
@@ -216,6 +218,7 @@ namespace OLock
                 ["settings_sleep_command"] = "睡眠命令",
                 ["settings_sleep_arguments"] = "睡眠參數",
                 ["settings_verbose_log"] = "詳細日誌 (排查問題時勾選)",
+                ["settings_check_updates"] = "啟動時自動檢查更新",
                 ["settings_save"] = "儲存",
                 ["settings_cancel"] = "取消"
             }

@@ -24,6 +24,7 @@ namespace OLock
         public string SleepArguments { get; set; } = "";
         public int LogRetentionDays { get; set; }
         public bool LogVerbose { get; set; }
+        public bool CheckUpdatesOnStartup { get; set; }
 
         public static AppConfig CreateDefault()
         {
@@ -39,7 +40,8 @@ namespace OLock
                 SleepCommand = "rundll32.exe",
                 SleepArguments = "powrprof.dll,SetSuspendState 0,1,0",
                 LogRetentionDays = 7,
-                LogVerbose = false
+                LogVerbose = false,
+                CheckUpdatesOnStartup = true
             };
         }
 
@@ -160,6 +162,7 @@ namespace OLock
                     bool? flag = ReadBool(key, "AutoSleep"); if (flag != null) autoSleep = flag.Value;
                     flag = ReadBool(key, "AutoScreenOff"); if (flag != null) autoScreenOff = flag.Value;
                     flag = ReadBool(key, "LogVerbose"); if (flag != null) config.LogVerbose = flag.Value;
+                    flag = ReadBool(key, "CheckUpdatesOnStartup"); if (flag != null) config.CheckUpdatesOnStartup = flag.Value;
                 }
             }
             catch (Exception ex)
@@ -253,6 +256,7 @@ namespace OLock
                         key.SetValue("AutoSleep", autoSleep);
                         key.SetValue("AutoScreenOff", autoScreenOff);
                         key.SetValue("LogVerbose", config.LogVerbose);
+                        key.SetValue("CheckUpdatesOnStartup", config.CheckUpdatesOnStartup);
                     }
                 }
             }
