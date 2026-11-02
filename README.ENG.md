@@ -39,5 +39,10 @@ Right-click the tray icon → **Connection test…** (or double-click `OLock.exe
 - **Check now**: Automatically checks when opened, or click to re-check anytime. 🟢 When connected, the matched IP and process PID are shown; 🔴 when not, a diagnosis is given (main process not running / no established connection / remote IP doesn't look like the phone).
 - **Disconnect test**: Once the phone is online, start it from the guide inside the window. The test runs the **real monitoring pipeline** (offline countdown, tray icon turns red), but only **simulates** the lock/sleep command when it fires — **the screen never locks and the PC never sleeps**, and monitoring safely waits for the phone to reconnect before resuming lock guard.
 
+### 🔄 Check for Updates & Auto-Update (new in v1.5.0)
+
+- **Silent startup check**: Checks GitHub Releases once in the background after startup (can be toggled via **Check for updates on startup** in **Settings**). Stays completely silent when up to date or offline, and shows a tray notification when a new release is available.
+- **One-click in-app self-update**: Right-click the tray icon → **Check for updates…** to view release notes, automatically match your current `Lite` or `Full` package, download with progress, replace `OLock.exe` in place, and seamlessly restart.
+
 ### Contributors
 **Github Copilot**
