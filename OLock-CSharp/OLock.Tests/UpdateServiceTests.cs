@@ -184,5 +184,57 @@ namespace OLock.Tests
                     File.Delete(tempFile);
             }
         }
+
+        [Theory]
+        [InlineData("en")]
+        [InlineData("zh-Hans")]
+        [InlineData("zh-Hant")]
+        public void UpdateLocalizationKeys_AreDefinedAndFormattableInAllLanguages(string lang)
+        {
+            string prev = Localization.currentLang;
+            try
+            {
+                Localization.currentLang = lang;
+                string[] plainKeys =
+                {
+                    "settings_check_updates",
+                    "tray_check_update",
+                    "update_title",
+                    "update_checking",
+                    "update_up_to_date",
+                    "update_notes_label",
+                    "update_notes_empty",
+                    "update_applying",
+                    "update_cancelled",
+                    "update_btn_install",
+                    "update_btn_recheck",
+                    "update_btn_cancel",
+                    "update_btn_open_page",
+                    "update_btn_close"
+                };
+
+                foreach (string key in plainKeys)
+                {
+                    string val = Localization.Tr(key);
+                    Assert.NotEqual(key, val);
+                    Assert.False(string.IsNullOrWhiteSpace(val));
+                }
+
+                Assert.Contains("1.5.0", Localization.Tr("tray_check_update_new", "1.5.0"));
+                Assert.Contains("OLock", Localization.Tr("tray_update_balloon_title", "OLock"));
+                Assert.Contains("1.5.0", Localization.Tr("tray_update_balloon_text", "1.5.0"));
+                Assert.Contains("Lite", Localization.Tr("update_current_version", "1.4.1", "Lite"));
+                Assert.Contains("v1.5.0", Localization.Tr("update_latest_version", "v1.5.0"));
+                Assert.Contains("1.5.0", Localization.Tr("update_available", "1.5.0", "O-Lock-Lite.zip"));
+                Assert.Contains("1.5.0", Localization.Tr("update_available_no_asset", "1.5.0"));
+                Assert.Contains("403", Localization.Tr("update_failed", "HTTP 403"));
+                Assert.Contains("50%", Localization.Tr("update_downloading", "O-Lock-Lite.zip", "50%"));
+                Assert.Contains("disk full", Localization.Tr("update_apply_failed", "disk full"));
+            }
+            finally
+            {
+                Localization.currentLang = prev;
+            }
+        }
     }
 }

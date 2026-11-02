@@ -27,6 +27,7 @@ namespace OLock
         private static int ticksSinceShellSync;
 
         private static DateTime lastTrayErrorLog = DateTime.MinValue;  // 托盘报错限流
+        private static UpdateCheckResult? availableUpdate;
 
         [DllImport("user32.dll")]
         private static extern bool DestroyIcon(IntPtr handle);
@@ -100,6 +101,12 @@ namespace OLock
             var logItem = new ToolStripMenuItem(Tr("tray_log"));
             logItem.Click += (s, e) => ShowLogViewer();
 
+            string checkUpdateText = availableUpdate != null && availableUpdate.Status == UpdateCheckStatus.UpdateAvailable
+                ? Tr("tray_check_update_new", availableUpdate.LatestVersion)
+                : Tr("tray_check_update");
+            var checkUpdateItem = new ToolStripMenuItem(checkUpdateText);
+            checkUpdateItem.Click += (s, e) => UpdateForm.ShowUpdateWindow(availableUpdate);
+
             var quitItem = new ToolStripMenuItem(Tr("tray_quit"));
             quitItem.Click += (s, e) =>
             {
@@ -119,6 +126,7 @@ namespace OLock
             menu.Items.Add(settingsItem);
             menu.Items.Add(testItem);
             menu.Items.Add(logItem);
+            menu.Items.Add(checkUpdateItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(quitItem);
 
@@ -129,6 +137,32 @@ namespace OLock
         {
             if (trayIcon != null)
                 trayIcon.Visible = false;
+        }
+
+        internal static void SetCachedAvailableUpdate(UpdateCheckResult? result)
+        {
+            availableUpdate = result != null && result.Status == UpdateCheckStatus.UpdateAvailable
+                ? result
+                : null;
+            UpdateContextMenu();
+        }
+
+        internal static void NotifyUpdateAvailable(UpdateCheckResult result)
+        {
+            SetCachedAvailableUpdate(result);
+            if (trayIcon == null) return;
+            trayIcon.BalloonTipClicked -= OnBalloonTipClicked;
+            trayIcon.BalloonTipClicked += OnBalloonTipClicked;
+            trayIcon.ShowBalloonTip(
+                5000,
+                Tr("tray_update_balloon_title", APP_NAME),
+                Tr("tray_update_balloon_text", result.LatestVersion),
+                ToolTipIcon.Info);
+        }
+
+        private static void OnBalloonTipClicked(object? sender, EventArgs e)
+        {
+            UpdateForm.ShowUpdateWindow(availableUpdate);
         }
 
         private static void UpdateContextMenu()

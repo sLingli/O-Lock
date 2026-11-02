@@ -207,6 +207,11 @@ namespace OLock
                 uiContext.Post(_ => ConnectionTestForm.ShowTestWindow(), null);
             }
 
+            if (config.CheckUpdatesOnStartup)
+            {
+                _ = CheckUpdatesOnStartupAsync(uiContext);
+            }
+
             // 运行消息循环
             try
             {
@@ -324,6 +329,23 @@ namespace OLock
             catch (Exception ex)
             {
                 LogError("Config", $"Failed to probe legacy config file: {Describe(ex)}");
+            }
+        }
+
+        private static async Task CheckUpdatesOnStartupAsync(SynchronizationContext uiContext)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                var result = await UpdateService.CheckForUpdateAsync().ConfigureAwait(false);
+                if (result.Status == UpdateCheckStatus.UpdateAvailable)
+                {
+                    uiContext.Post(_ => NotifyUpdateAvailable(result), null);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError("Update", $"Startup update check failed unexpectedly: {Describe(ex)}");
             }
         }
 
