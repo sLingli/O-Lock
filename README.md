@@ -1,4 +1,4 @@
-<div align="center">
+<div align="center"><img src="icon.png" alt="O-Lock Logo" width="128">
 
 # O-Lock
 ### OPPO Connect Auto-Lock / OPPO 互联自动锁
