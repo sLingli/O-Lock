@@ -8,6 +8,7 @@ using OLock;
 namespace OLock.Tests
 {
     // 版本解析比较、GitHub Release JSON 选包解析与 PE 头校验的单元测试
+    [Collection("GlobalState")]
     public class UpdateServiceTests
     {
         [Theory]

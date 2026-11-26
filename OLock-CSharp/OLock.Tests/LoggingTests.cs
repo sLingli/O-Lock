@@ -3,6 +3,7 @@ using OLock;
 namespace OLock.Tests
 {
     // 日志过期清理的行过滤逻辑测试
+    [Collection("GlobalState")]
     public class LoggingTests
     {
         [Fact]

@@ -4,7 +4,12 @@ using OLock;
 
 namespace OLock.Tests
 {
+    // 涉及共享静态状态 (Program.config / Localization / Logging) 的测试类归入同一集合，避免 xUnit 跨类并发互相踩写
+    [CollectionDefinition("GlobalState", DisableParallelization = true)]
+    public sealed class GlobalStateCollection { }
+
     // 配置默认值、Normalize 钳制与旧版设置迁移的测试
+    [Collection("GlobalState")]
     public class AppConfigTests
     {
         [Theory]
