@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
 
@@ -29,20 +30,49 @@ namespace OLock
         private static string? logFilePath;
         private static DateTime lastCleanupDate = DateTime.MinValue; // 上次日志清理的日期
 
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+        private const int WM_SETREDRAW = 0x000B;
+
         internal static void InitLogger()
         {
-            logFilePath = Path.Combine(AppContext.BaseDirectory, "olock.log");
+            lock (logLock)
+            {
+                logFilePath = Path.Combine(AppContext.BaseDirectory, "olock.log");
+            }
+        }
+
+        // 供单元测试切换临时日志路径并恢复原路径
+        internal static string? SwapLogFilePath(string? newPath)
+        {
+            lock (logLock)
+            {
+                string? previous = logFilePath;
+                logFilePath = newPath;
+                lastCleanupDate = DateTime.MinValue;
+                return previous;
+            }
+        }
+
+        internal static string[] ReadLogSnapshotLines()
+        {
+            lock (logLock)
+            {
+                if (logFilePath == null || !File.Exists(logFilePath))
+                    return Array.Empty<string>();
+                return File.ReadAllLines(logFilePath);
+            }
         }
 
         // 写入核心
         private static void Write(string level, string component, string message, string? location)
         {
-            if (logFilePath == null) return;
             var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {level}: [{component}] {message}";
             if (!string.IsNullOrEmpty(location))
                 line += $" ({location})";
             lock (logLock)
             {
+                if (logFilePath == null) return;
                 try
                 {
                     // 跨天后首次写日志时顺带清理一次过期日志
@@ -112,28 +142,32 @@ namespace OLock
         // 启动时和保存设置后由外壳调用，此后每天首次写日志时自动再清一次。
         internal static void CleanupExpiredEntries()
         {
-            lastCleanupDate = DateTime.Today; // 无论结果如何，当天不再重复清理
-            try
+            lock (logLock)
             {
-                if (logFilePath == null || !File.Exists(logFilePath))
-                    return;
+                lastCleanupDate = DateTime.Today; // 无论结果如何，当天不再重复清理
+                try
+                {
+                    if (logFilePath == null || !File.Exists(logFilePath))
+                        return;
 
-                var cutoff = DateTime.Now.AddDays(-config.LogRetentionDays);
-                string[] lines = File.ReadAllLines(logFilePath);
-                List<string> kept = FilterLines(lines, cutoff);
-                if (kept.Count == lines.Length)
-                    return;
+                    int retentionDays = config.LogRetentionDays;
+                    var cutoff = DateTime.Now.AddDays(-retentionDays);
+                    string[] lines = File.ReadAllLines(logFilePath);
+                    List<string> kept = FilterLines(lines, cutoff);
+                    if (kept.Count == lines.Length)
+                        return;
 
-                File.WriteAllLines(logFilePath, kept);
-                LogInfo("Log", $"Cleanup completed: deleted {lines.Length - kept.Count} expired entries (retaining last {config.LogRetentionDays} days)");
-            }
-            catch (Exception ex)
-            {
-                LogError("Log", $"Log cleanup failed: {Describe(ex)}");
+                    File.WriteAllLines(logFilePath, kept);
+                    LogInfo("Log", $"Cleanup completed: deleted {lines.Length - kept.Count} expired entries (retaining last {retentionDays} days)");
+                }
+                catch (Exception ex)
+                {
+                    LogError("Log", $"Log cleanup failed: {Describe(ex)}");
+                }
             }
         }
 
-        // 日期变化后首次写日志时清理一次
+        // 日期变化后首次写日志时清理一次（由已持有 logLock 的 Write 调用）
         private static void CleanupIfNeeded()
         {
             var today = DateTime.Today;
@@ -200,16 +234,25 @@ namespace OLock
             var clearBtn = new Button { Text = Tr("tray_log_clear"), Width = 70 };
             toolPanel.Controls.AddRange(new Control[] { searchBox, levelCombo, refreshBtn, copyBtn, clearBtn });
 
+            var logFont = new Font("Consolas", 9f);
             var logBox = new RichTextBox
             {
                 Dock = DockStyle.Fill,
                 ReadOnly = true,
-                Font = new Font("Consolas", 9f),
+                Font = logFont,
                 WordWrap = false,
                 BackColor = Color.White
             };
+            form.FormClosed += (_, _) => logFont.Dispose();
 
+            string[] cachedLines = Array.Empty<string>();
             string currentFilteredText = string.Empty;
+
+            void SetRedraw(bool enable)
+            {
+                if (logBox.IsHandleCreated)
+                    SendMessage(logBox.Handle, WM_SETREDRAW, enable ? (IntPtr)1 : IntPtr.Zero, IntPtr.Zero);
+            }
 
             void AppendLine(string line)
             {
@@ -225,20 +268,21 @@ namespace OLock
                 logBox.AppendText(line + Environment.NewLine);
             }
 
-            void LoadLog()
+            void RenderFilteredLog()
             {
-                logBox.Clear();
-                var sb = new StringBuilder();
+                SetRedraw(false);
                 try
                 {
+                    logBox.Clear();
+                    var sb = new StringBuilder();
                     int levelFilter = levelCombo.SelectedIndex; // 0=全部 1=INFO及以上 2=仅ERROR
                     string needle = searchBox.Text.Trim();
 
-                    string[] lines = File.Exists(logFilePath)
-                        ? File.ReadAllLines(logFilePath!)
+                    string[] sourceLines = cachedLines.Length > 0
+                        ? cachedLines
                         : new[] { Tr("tray_log_empty") };
 
-                    foreach (var line in lines)
+                    foreach (var line in sourceLines)
                     {
                         var level = ParseLevel(line);
                         if (levelFilter == 2 && level != LogLevel.Error) continue;
@@ -253,29 +297,60 @@ namespace OLock
                 {
                     AppendLine($"Error: {ex.Message}");
                 }
+                finally
+                {
+                    SetRedraw(true);
+                    logBox.Invalidate();
+                }
             }
 
-            refreshBtn.Click += (s, e) => LoadLog();
-            levelCombo.SelectedIndexChanged += (s, e) => LoadLog();
-            searchBox.TextChanged += (s, e) => LoadLog();
+            void ReloadFromDisk()
+            {
+                try
+                {
+                    cachedLines = ReadLogSnapshotLines();
+                }
+                catch (Exception ex)
+                {
+                    cachedLines = new[] { $"Error: {ex.Message}" };
+                }
+                RenderFilteredLog();
+            }
+
+            refreshBtn.Click += (s, e) => ReloadFromDisk();
+            levelCombo.SelectedIndexChanged += (s, e) => RenderFilteredLog();
+            searchBox.TextChanged += (s, e) => RenderFilteredLog();
 
             copyBtn.Click += (s, e) =>
             {
                 if (currentFilteredText.Length > 0)
-                    Clipboard.SetText(currentFilteredText);
+                {
+                    try
+                    {
+                        Clipboard.SetText(currentFilteredText);
+                    }
+                    catch (Exception ex)
+                    {
+                        LogError("Log", $"Failed to copy log to clipboard: {Describe(ex)}");
+                    }
+                }
             };
 
             clearBtn.Click += (s, e) =>
             {
                 try
                 {
-                    lock (logLock) { File.WriteAllText(logFilePath!, string.Empty); }
-                    LoadLog();
+                    lock (logLock)
+                    {
+                        if (logFilePath != null)
+                            File.WriteAllText(logFilePath, string.Empty);
+                    }
+                    ReloadFromDisk();
                 }
                 catch { }
             };
 
-            LoadLog();
+            ReloadFromDisk();
             form.Controls.Add(logBox);
             form.Controls.Add(toolPanel);
             form.Show();

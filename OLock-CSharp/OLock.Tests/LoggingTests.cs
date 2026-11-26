@@ -52,5 +52,54 @@ namespace OLock.Tests
             // 用字符串断言避免 public 测试方法暴露 internal 枚举类型 (CS0051)
             Assert.Equal(expected, Logging.ParseLevel(line).ToString());
         }
+
+        [Fact]
+        public async Task ConcurrentWriteCleanupAndSnapshotRead_IsThreadSafe()
+        {
+            string tempLog = Path.Combine(Path.GetTempPath(), $"olock_log_concurrency_{Guid.NewGuid():N}.log");
+            var prevConfig = Program.config;
+            string? prevPath = Logging.SwapLogFilePath(tempLog);
+            try
+            {
+                Program.config = AppConfig.CreateDefault();
+                File.WriteAllLines(tempLog, new[]
+                {
+                    "[2020-01-01 00:00:00] INFO: [Test] Expired entry",
+                    $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] INFO: [Test] Fresh entry"
+                });
+
+                var tasks = new List<Task>
+                {
+                    Task.Run(() =>
+                    {
+                        for (int i = 0; i < 40; i++)
+                            Logging.LogInfo("Test", $"concurrent-write-{i}");
+                    }),
+                    Task.Run(() =>
+                    {
+                        for (int i = 0; i < 15; i++)
+                            Logging.CleanupExpiredEntries();
+                    }),
+                    Task.Run(() =>
+                    {
+                        for (int i = 0; i < 30; i++)
+                            _ = Logging.ReadLogSnapshotLines();
+                    })
+                };
+
+                await Task.WhenAll(tasks);
+
+                string[] finalLines = Logging.ReadLogSnapshotLines();
+                Assert.DoesNotContain(finalLines, l => l.Contains("Expired entry"));
+                Assert.Contains(finalLines, l => l.Contains("Fresh entry"));
+                Assert.Contains(finalLines, l => l.Contains("concurrent-write-39"));
+            }
+            finally
+            {
+                Logging.SwapLogFilePath(prevPath);
+                Program.config = prevConfig;
+                try { if (File.Exists(tempLog)) File.Delete(tempLog); } catch { }
+            }
+        }
     }
 }
