@@ -79,5 +79,74 @@ namespace OLock.Tests
             Assert.NotNull(r.SampleRemoteIps);
             Assert.Empty(r.SampleRemoteIps);
         }
+
+        [Theory]
+        [InlineData("10.0.0.1", true)]
+        [InlineData("172.15.255.255", false)]
+        [InlineData("172.16.0.1", true)]
+        [InlineData("172.31.255.254", true)]
+        [InlineData("172.32.0.1", false)]
+        [InlineData("192.168.1.5", true)]
+        [InlineData("8.8.8.8", false)]
+        [InlineData("::ffff:192.168.1.5", true)]
+        [InlineData("fe80::1a2b:3c4d", true)]
+        [InlineData("fd12:3456::1", true)]
+        [InlineData("2001:4860:4860::8888", false)]
+        [InlineData("not-an-ip", false)]
+        public void IsPrivateIpAddress_ClassifiesIpv4AndIpv6Correctly(string ip, bool expected)
+        {
+            Assert.Equal(expected, TcpConnectionChecker.IsPrivateIpAddress(ip));
+        }
+
+        [Theory]
+        [InlineData("192.168.1.55", "192.168.1.", true)]
+        [InlineData("192.168.1.55", "192.168.1", true)]
+        [InlineData("192.168.100.55", "192.168.1", false)] // 段边界保护：不能误匹配 192.168.100.x
+        [InlineData("192.168.1.5", "192.168.1.5", true)]
+        [InlineData("192.168.1.50", "192.168.1.5", false)] // 不能把 .5 误匹配为 .50
+        [InlineData("fe80::1234", "fe80:", true)]
+        [InlineData("fe80::1234", "fe80", true)]
+        public void MatchesIpPrefix_EnforcesSegmentBoundaries(string ip, string prefix, bool expected)
+        {
+            Assert.Equal(expected, TcpConnectionChecker.MatchesIpPrefix(ip, prefix));
+        }
+
+        [Fact]
+        public void HasAllowedRemoteIpPrefix_StrictWhitelist_RejectsOtherPrivateIps()
+        {
+            var cfg = AppConfig.CreateDefault();
+            cfg.AllowedRemoteIpPrefixes = new[] { "192.168.1." };
+            cfg.IgnoredRemoteIpPrefixes = Array.Empty<string>();
+
+            Assert.True(TcpConnectionChecker.HasAllowedRemoteIpPrefix("192.168.1.20", cfg, _ => false));
+            Assert.False(TcpConnectionChecker.HasAllowedRemoteIpPrefix("10.0.0.8", cfg, _ => false));
+            Assert.False(TcpConnectionChecker.HasAllowedRemoteIpPrefix("172.16.0.8", cfg, _ => false));
+            Assert.False(TcpConnectionChecker.HasAllowedRemoteIpPrefix("192.168.2.20", cfg, _ => false));
+        }
+
+        [Fact]
+        public void HasAllowedRemoteIpPrefix_EmptyWhitelist_FallsBackToPrivateAddress()
+        {
+            var cfg = AppConfig.CreateDefault();
+            cfg.AllowedRemoteIpPrefixes = Array.Empty<string>();
+            cfg.IgnoredRemoteIpPrefixes = Array.Empty<string>();
+
+            Assert.True(TcpConnectionChecker.HasAllowedRemoteIpPrefix("172.16.5.9", cfg, _ => false));
+            Assert.True(TcpConnectionChecker.HasAllowedRemoteIpPrefix("fe80::abcd", cfg, _ => false));
+            Assert.False(TcpConnectionChecker.HasAllowedRemoteIpPrefix("8.8.8.8", cfg, _ => false));
+        }
+
+        [Fact]
+        public void HasAllowedRemoteIpPrefix_IgnoredAndLocalIpsAlwaysRejected()
+        {
+            var cfg = AppConfig.CreateDefault();
+            cfg.AllowedRemoteIpPrefixes = new[] { "192.168." };
+            cfg.IgnoredRemoteIpPrefixes = new[] { "192.168.1.1" };
+
+            Assert.False(TcpConnectionChecker.HasAllowedRemoteIpPrefix("192.168.1.1", cfg, _ => false));
+            Assert.True(TcpConnectionChecker.HasAllowedRemoteIpPrefix("192.168.1.10", cfg, _ => false)); // 忽略 192.168.1.1 不误伤 .10
+            Assert.False(TcpConnectionChecker.HasAllowedRemoteIpPrefix("192.168.1.25", cfg, ip => ip == "192.168.1.25"));
+            Assert.True(TcpConnectionChecker.HasAllowedRemoteIpPrefix("::ffff:192.168.1.88", cfg, _ => false));
+        }
     }
 }

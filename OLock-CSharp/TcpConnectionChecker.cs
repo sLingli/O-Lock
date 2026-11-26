@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
@@ -21,7 +22,7 @@ namespace OLock
         ProcessNotRunning,
         // 进程在跑，但没有任何 ESTABLISHED 连接
         NoEstablishedConnection,
-        // 有 ESTABLISHED 连接，但远程 IP 均不像手机（不匹配私网前缀）
+        // 有 ESTABLISHED 连接，但远程 IP 均不像手机（不匹配允许前缀）
         IpNotMatched,
         // 连接表查询本身失败
         CheckFailed
@@ -42,11 +43,23 @@ namespace OLock
         public ConnectionReason Reason { get; set; }
     }
 
-    // 手机连接检测：进程存活 + 通过 GetExtendedTcpTable 查询 ESTABLISHED 连接
+    // 手机连接检测：进程存活 + 通过 GetExtendedTcpTable 查询 IPv4/IPv6 ESTABLISHED 连接
     internal static class TcpConnectionChecker
     {
-        private static HashSet<string> localIpAddresses = new HashSet<string>();
-        private static DateTime localIpAddressesLoadedAt = DateTime.MinValue;
+        private static readonly object localIpLock = new object();
+        private static HashSet<string> localIpAddresses = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private static long localIpAddressesLoadedAtTick = -1;
+
+        static TcpConnectionChecker()
+        {
+            try
+            {
+                NetworkChange.NetworkAddressChanged += (_, _) => InvalidateLocalIpCache();
+            }
+            catch
+            {
+            }
+        }
 
         // ================== TCP 连接表查询 (iphlpapi) ==================
         // 直接调用系统 API 读取 TCP 连接表 (netstat 内部使用的同一 API)，
@@ -57,126 +70,210 @@ namespace OLock
 
         private const uint NO_ERROR = 0;
         private const uint ERROR_INSUFFICIENT_BUFFER = 122;
-        private const uint AF_INET = 2;                 // 仅查询 IPv4 连接
+        private const uint AF_INET = 2;                 // IPv4 TCP 连接表
+        private const uint AF_INET6 = 23;               // IPv6 / 双栈映射 TCP 连接表
         private const uint TCP_TABLE_OWNER_PID_ALL = 5; // 返回带拥有进程 PID 的全部 TCP 连接
         private const uint MIB_TCP_STATE_ESTAB = 5;     // ESTABLISHED 状态
-        // MIB_TCPROW_OWNER_PID 布局: state/localAddr/localPort/remoteAddr/remotePort/owningPid，共 6 个 DWORD (24 字节)
+        // MIB_TCPROW_OWNER_PID: state(0)/localAddr(4)/localPort(8)/remoteAddr(12)/remotePort(16)/owningPid(20)，共 24 字节
         private const int TCP_ROW_SIZE = 24;
+        // MIB_TCP6ROW_OWNER_PID: localAddr(0,16)/localScope(16)/localPort(20)/remoteAddr(24,16)/remoteScope(40)/remotePort(44)/state(48)/owningPid(52)，共 56 字节
+        private const int TCP6_ROW_SIZE = 56;
 
         private static readonly List<string> emptySamples = new List<string>(0);
+
+        internal static void InvalidateLocalIpCache()
+        {
+            lock (localIpLock)
+            {
+                localIpAddressesLoadedAtTick = -1;
+            }
+        }
 
         // Checks whether the configured process is running.
         // 在后台线程执行
         internal static bool IsAppRunning()
         {
+            var cfg = config;
+            return GetAppPids(cfg.AppProcessName).Count > 0;
+        }
+
+        private static HashSet<uint> GetAppPids(string processName)
+        {
+            var pids = new HashSet<uint>();
             try
             {
-                var processes = Process.GetProcessesByName(config.AppProcessName);
-                try
+                var processes = Process.GetProcessesByName(processName);
+                foreach (var proc in processes)
                 {
-                    return processes.Length > 0;
-                }
-                finally
-                {
-                    foreach (var p in processes)
-                        p.Dispose();
+                    try { pids.Add((uint)proc.Id); }
+                    finally { proc.Dispose(); }
                 }
             }
             catch (Exception ex)
             {
                 LogError("Network", $"Process enumeration failed: {Describe(ex)}");
-                return false;
-            }
-        }
-
-        private static HashSet<uint> GetAppPids()
-        {
-            var pids = new HashSet<uint>();
-            foreach (var proc in Process.GetProcessesByName(config.AppProcessName))
-            {
-                try { pids.Add((uint)proc.Id); }
-                finally { proc.Dispose(); }
             }
             return pids;
         }
 
+        // 单次后台检测合并进程枚举与 TCP 表查询：避免 UI 线程阻塞，且每轮只扫描一次进程表
+        internal static Task<(bool AppRunning, bool? PhoneConnected)> CheckMonitorFactsAsync(bool checkConnection)
+        {
+            var cfg = config;
+            return Task.Run(() =>
+            {
+                var pids = GetAppPids(cfg.AppProcessName);
+                if (pids.Count == 0)
+                {
+                    if (checkConnection && cfg.LogVerbose)
+                        LogDebug("Network", $"{cfg.AppProcessName} process not found (skipping connection check)");
+                    return (false, checkConnection ? (bool?)false : null);
+                }
+
+                if (!checkConnection)
+                    return (true, (bool?)null);
+
+                if (cfg.LogVerbose)
+                    LogDebug("Network", $"Matching PIDs: {string.Join(", ", pids.OrderBy(p => p))}");
+
+                bool connected = CheckPhoneConnectionDetail(pids, cfg, collectDiagnostics: cfg.LogVerbose).IsConnected;
+                return (true, (bool?)connected);
+            });
+        }
+
         // Checks whether the configured process has an established connection
         // to a configured remote IP prefix.
-        // 常态监控每秒调用：仅在开启详细日志时收集样本，命中即提前中断扫描，保证主循环零额外堆分配
-        internal static async Task<bool> CheckPhoneConnectionAsync()
+        // 进程枚举与表查询均在后台线程完成，不阻塞 UI
+        internal static Task<bool> CheckPhoneConnectionAsync()
         {
-            var pids = GetAppPids();
-            if (pids.Count == 0)
+            var cfg = config;
+            return Task.Run(() =>
             {
-                if (config.LogVerbose)
-                    LogDebug("Network", $"{config.AppProcessName} process not found (skipping connection check)");
-                return false;
-            }
+                var pids = GetAppPids(cfg.AppProcessName);
+                if (pids.Count == 0)
+                {
+                    if (cfg.LogVerbose)
+                        LogDebug("Network", $"{cfg.AppProcessName} process not found (skipping connection check)");
+                    return false;
+                }
 
-            if (config.LogVerbose)
-                LogDebug("Network", $"Matching PIDs: {string.Join(", ", pids.OrderBy(p => p))}");
+                if (cfg.LogVerbose)
+                    LogDebug("Network", $"Matching PIDs: {string.Join(", ", pids.OrderBy(p => p))}");
 
-            return await Task.Run(() => CheckPhoneConnectionDetail(pids, collectDiagnostics: config.LogVerbose).IsConnected);
+                return CheckPhoneConnectionDetail(pids, cfg, collectDiagnostics: cfg.LogVerbose).IsConnected;
+            });
         }
 
         // 完整版检测：供测试窗口使用，无条件收集诊断详情（进程状态、连接条数、命中信息、未命中去重样本与归因）
-        internal static async Task<PhoneConnectionResult> CheckPhoneConnectionDetailAsync()
+        internal static Task<PhoneConnectionResult> CheckPhoneConnectionDetailAsync()
         {
-            var pids = GetAppPids();
-            if (pids.Count == 0)
+            var cfg = config;
+            return Task.Run(() =>
             {
-                LogDebug("Network", $"{config.AppProcessName} process not found (skipping connection check)");
-                return new PhoneConnectionResult { AppRunning = false, Reason = ConnectionReason.ProcessNotRunning };
-            }
+                var pids = GetAppPids(cfg.AppProcessName);
+                if (pids.Count == 0)
+                {
+                    LogDebug("Network", $"{cfg.AppProcessName} process not found (skipping connection check)");
+                    return new PhoneConnectionResult { AppRunning = false, Reason = ConnectionReason.ProcessNotRunning };
+                }
 
-            if (config.LogVerbose)
-                LogDebug("Network", $"Matching PIDs: {string.Join(", ", pids.OrderBy(p => p))}");
+                if (cfg.LogVerbose)
+                    LogDebug("Network", $"Matching PIDs: {string.Join(", ", pids.OrderBy(p => p))}");
 
-            // 表查询放到后台线程执行，避免阻塞 UI
-            return await Task.Run(() => CheckPhoneConnectionDetail(pids, collectDiagnostics: true));
+                return CheckPhoneConnectionDetail(pids, cfg, collectDiagnostics: true);
+            });
         }
 
-        private static PhoneConnectionResult CheckPhoneConnectionDetail(HashSet<uint> pids, bool collectDiagnostics)
+        private static PhoneConnectionResult CheckPhoneConnectionDetail(HashSet<uint> pids, AppConfig cfg, bool collectDiagnostics)
         {
             try
             {
-                // 第一次调用传空缓冲区，获取所需缓冲区大小
-                int size = 0;
-                uint ret = GetExtendedTcpTable(IntPtr.Zero, ref size, false, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
-                if (ret == NO_ERROR && size <= sizeof(int))
-                    return EvaluateConnection(true, 0, null, null, emptySamples); // 连接表为空
-                if (ret != ERROR_INSUFFICIENT_BUFFER || size < sizeof(int) + TCP_ROW_SIZE)
-                {
-                    LogError("Network", $"GetExtendedTcpTable buffer size query failed: ret={ret}, size={size}");
+                bool v4Ok = TryQueryTcpTable(AF_INET, TCP_ROW_SIZE, pids, cfg, collectDiagnostics, out TcpScanFacts v4Facts);
+                if (v4Ok && v4Facts.HitIp != null && !collectDiagnostics)
+                    return EvaluateFacts(v4Facts);
+
+                bool v6Ok = TryQueryTcpTable(AF_INET6, TCP6_ROW_SIZE, pids, cfg, collectDiagnostics, out TcpScanFacts v6Facts);
+                if (!v4Ok && !v6Ok)
                     return new PhoneConnectionResult { AppRunning = true, Reason = ConnectionReason.CheckFailed };
-                }
 
-                for (int attempt = 0; attempt < 3; attempt++)
+                int totalEstab = (v4Ok ? v4Facts.EstablishedCount : 0) + (v6Ok ? v6Facts.EstablishedCount : 0);
+                string? hitIp = v4Ok && v4Facts.HitIp != null ? v4Facts.HitIp : (v6Ok ? v6Facts.HitIp : null);
+                uint? hitPid = v4Ok && v4Facts.HitIp != null ? v4Facts.HitPid : (v6Ok ? v6Facts.HitPid : null);
+
+                List<string> samples = emptySamples;
+                if (collectDiagnostics && hitIp == null)
                 {
-                    IntPtr buffer = Marshal.AllocHGlobal(size);
-                    try
+                    samples = new List<string>(3);
+                    if (v4Ok)
                     {
-                        ret = GetExtendedTcpTable(buffer, ref size, false, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
-                        if (ret == NO_ERROR)
-                            return EvaluateFacts(ScanTcpTableForConnection(buffer, size, pids, collectDiagnostics));
+                        foreach (string s in v4Facts.Samples)
+                            if (samples.Count < 3 && !samples.Contains(s)) samples.Add(s);
                     }
-                    finally
+                    if (v6Ok)
                     {
-                        Marshal.FreeHGlobal(buffer);
+                        foreach (string s in v6Facts.Samples)
+                            if (samples.Count < 3 && !samples.Contains(s)) samples.Add(s);
                     }
-
-                    // 两次调用之间连接表可能增长，按 API 返回的新 size 重试
-                    if (ret != ERROR_INSUFFICIENT_BUFFER)
-                        break;
                 }
 
-                LogError("Network", $"GetExtendedTcpTable call failed: ret={ret}");
+                return EvaluateConnection(true, totalEstab, hitIp, hitPid, samples);
             }
             catch (Exception ex)
             {
                 LogError("Network", $"CheckPhoneConnection exception: {Describe(ex)}");
+                return new PhoneConnectionResult { AppRunning = true, Reason = ConnectionReason.CheckFailed };
             }
-            return new PhoneConnectionResult { AppRunning = true, Reason = ConnectionReason.CheckFailed };
+        }
+
+        private static bool TryQueryTcpTable(
+            uint addressFamily,
+            int rowSize,
+            HashSet<uint> pids,
+            AppConfig cfg,
+            bool collectDiagnostics,
+            out TcpScanFacts facts)
+        {
+            facts = new TcpScanFacts(0, null, null, emptySamples);
+
+            int size = 0;
+            uint ret = GetExtendedTcpTable(IntPtr.Zero, ref size, false, addressFamily, TCP_TABLE_OWNER_PID_ALL, 0);
+            if (ret == NO_ERROR && size <= sizeof(int))
+                return true; // 连接表为空
+            if (ret != ERROR_INSUFFICIENT_BUFFER || size < sizeof(int) + rowSize)
+            {
+                // IPv6 在禁用了 IPv6 协议栈的机器上可能返回错误，不污染 IPv4 正常检测
+                if (addressFamily == AF_INET)
+                    LogError("Network", $"GetExtendedTcpTable(AF_INET) buffer size query failed: ret={ret}, size={size}");
+                return false;
+            }
+
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                IntPtr buffer = Marshal.AllocHGlobal(size);
+                try
+                {
+                    ret = GetExtendedTcpTable(buffer, ref size, false, addressFamily, TCP_TABLE_OWNER_PID_ALL, 0);
+                    if (ret == NO_ERROR)
+                    {
+                        facts = addressFamily == AF_INET
+                            ? ScanTcpV4Table(buffer, size, pids, cfg, collectDiagnostics)
+                            : ScanTcpV6Table(buffer, size, pids, cfg, collectDiagnostics);
+                        return true;
+                    }
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(buffer);
+                }
+
+                // 两次调用之间连接表可能增长，按 API 返回的新 size 重试
+                if (ret != ERROR_INSUFFICIENT_BUFFER)
+                    break;
+            }
+
+            if (addressFamily == AF_INET)
+                LogError("Network", $"GetExtendedTcpTable(AF_INET) call failed: ret={ret}");
+            return false;
         }
 
         // 归因纯函数：根据扫描产物推断连接状态与原因。无任何系统调用，可单元测试。
@@ -239,18 +336,17 @@ namespace OLock
             }
         }
 
-        // 扫描内核 TCP 连接表，收集主程序进程的连接事实（不做归因，归因在 EvaluateConnection）
-        private static TcpScanFacts ScanTcpTableForConnection(IntPtr buffer, int size, HashSet<uint> pids, bool collectDiagnostics)
+        // 扫描内核 IPv4 TCP 连接表，收集主程序进程的连接事实
+        private static TcpScanFacts ScanTcpV4Table(IntPtr buffer, int size, HashSet<uint> pids, AppConfig cfg, bool collectDiagnostics)
         {
             int numEntries = Marshal.ReadInt32(buffer);
             int maxEntries = (size - sizeof(int)) / TCP_ROW_SIZE;
             if (numEntries < 0 || numEntries > maxEntries)
-                numEntries = maxEntries; // 防御：避免越界读取
+                numEntries = maxEntries;
 
             int pidEstab = 0;
             string? hitIp = null;
             uint? hitPid = null;
-            // 样本仅在需要诊断时收集 (≤3 个且去重)
             var samples = collectDiagnostics ? new List<string>() : null;
 
             IntPtr rowPtr = buffer + sizeof(int);
@@ -262,14 +358,13 @@ namespace OLock
                     if (pids.Contains(pid))
                     {
                         pidEstab++;
-                        // 远程地址是网络字节序的 DWORD，低字节即第一个八位组，IPAddress 可直接解析
                         var remoteIP = new IPAddress((long)(uint)Marshal.ReadInt32(rowPtr + 12)).ToString();
-                        if (hitIp == null && HasAllowedRemoteIpPrefix(remoteIP))
+                        if (hitIp == null && HasAllowedRemoteIpPrefix(remoteIP, cfg))
                         {
                             hitIp = remoteIP;
                             hitPid = pid;
                             if (!collectDiagnostics)
-                                break; // 常态无诊断需求：命中即提前退出，避免无谓扫描
+                                break;
                         }
                         if (hitIp == null && samples != null && samples.Count < 3 && !samples.Contains(remoteIP))
                             samples.Add(remoteIP);
@@ -278,68 +373,169 @@ namespace OLock
                 rowPtr += TCP_ROW_SIZE;
             }
 
-            if (hitIp != null)
-            {
-                if (config.LogVerbose)
-                    LogDebug("Network", $"Check: TCP table {numEntries} rows, matched {hitIp} (PID {hitPid} = {config.AppProcessName})");
-            }
-            else if (config.LogVerbose)
-            {
-                LogDebug("Network", $"Check: TCP table {numEntries} rows, {config.AppProcessName} ESTABLISHED {pidEstab} row(s)" +
-                    (samples != null && samples.Count > 0 ? $", not matched (sample remote IPs: {string.Join(", ", samples)})" : $", no ESTABLISHED connections for {config.AppProcessName}"));
-            }
-
+            LogScanSummary("IPv4", numEntries, pidEstab, hitIp, hitPid, samples, cfg);
             return new TcpScanFacts(pidEstab, hitIp, hitPid, samples ?? emptySamples);
         }
 
-        private static bool HasAllowedRemoteIpPrefix(string remoteIP)
+        // 扫描内核 IPv6 / 双栈映射 TCP 连接表
+        private static TcpScanFacts ScanTcpV6Table(IntPtr buffer, int size, HashSet<uint> pids, AppConfig cfg, bool collectDiagnostics)
+        {
+            int numEntries = Marshal.ReadInt32(buffer);
+            int maxEntries = (size - sizeof(int)) / TCP6_ROW_SIZE;
+            if (numEntries < 0 || numEntries > maxEntries)
+                numEntries = maxEntries;
+
+            int pidEstab = 0;
+            string? hitIp = null;
+            uint? hitPid = null;
+            var samples = collectDiagnostics ? new List<string>() : null;
+            byte[] addrBytes = new byte[16];
+
+            IntPtr rowPtr = buffer + sizeof(int);
+            for (int i = 0; i < numEntries; i++)
+            {
+                if ((uint)Marshal.ReadInt32(rowPtr + 48) == MIB_TCP_STATE_ESTAB)
+                {
+                    uint pid = (uint)Marshal.ReadInt32(rowPtr + 52);
+                    if (pids.Contains(pid))
+                    {
+                        pidEstab++;
+                        Marshal.Copy(rowPtr + 24, addrBytes, 0, 16);
+                        string remoteIP = NormalizeIpAddress(new IPAddress(addrBytes));
+                        if (hitIp == null && HasAllowedRemoteIpPrefix(remoteIP, cfg))
+                        {
+                            hitIp = remoteIP;
+                            hitPid = pid;
+                            if (!collectDiagnostics)
+                                break;
+                        }
+                        if (hitIp == null && samples != null && samples.Count < 3 && !samples.Contains(remoteIP))
+                            samples.Add(remoteIP);
+                    }
+                }
+                rowPtr += TCP6_ROW_SIZE;
+            }
+
+            LogScanSummary("IPv6", numEntries, pidEstab, hitIp, hitPid, samples, cfg);
+            return new TcpScanFacts(pidEstab, hitIp, hitPid, samples ?? emptySamples);
+        }
+
+        private static void LogScanSummary(string proto, int numEntries, int pidEstab, string? hitIp, uint? hitPid, List<string>? samples, AppConfig cfg)
+        {
+            if (!cfg.LogVerbose) return;
+
+            if (hitIp != null)
+            {
+                LogDebug("Network", $"Check({proto}): TCP table {numEntries} rows, matched {hitIp} (PID {hitPid} = {cfg.AppProcessName})");
+            }
+            else if (pidEstab > 0 || proto == "IPv4")
+            {
+                LogDebug("Network", $"Check({proto}): TCP table {numEntries} rows, {cfg.AppProcessName} ESTABLISHED {pidEstab} row(s)" +
+                    (samples != null && samples.Count > 0 ? $", not matched (sample remote IPs: {string.Join(", ", samples)})" : $", no ESTABLISHED connections for {cfg.AppProcessName}"));
+            }
+        }
+
+        internal static string NormalizeIpAddress(IPAddress address)
+        {
+            if (address.IsIPv4MappedToIPv6)
+                return address.MapToIPv4().ToString();
+            if (address.AddressFamily == AddressFamily.InterNetworkV6 && address.ScopeId != 0)
+                return new IPAddress(address.GetAddressBytes()).ToString();
+            return address.ToString();
+        }
+
+        // 段边界安全的 IP 前缀匹配：例如 "192.168.1" 仅匹配 "192.168.1" 或 "192.168.1.x"，不会误匹配 "192.168.100.x"
+        internal static bool MatchesIpPrefix(string remoteIP, string prefix)
+        {
+            if (string.IsNullOrWhiteSpace(remoteIP) || string.IsNullOrWhiteSpace(prefix))
+                return false;
+
+            string trimmedPrefix = prefix.Trim();
+            if (!remoteIP.StartsWith(trimmedPrefix, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (remoteIP.Length == trimmedPrefix.Length)
+                return true;
+
+            if (trimmedPrefix.EndsWith('.') || trimmedPrefix.EndsWith(':'))
+                return true;
+
+            char nextChar = remoteIP[trimmedPrefix.Length];
+            return nextChar == '.' || nextChar == ':';
+        }
+
+        // 判断远程 IP 是否符合白名单策略：
+        // 1. 排除本机/回环地址和 IgnoredRemoteIpPrefixes；
+        // 2. 若配置了 AllowedRemoteIpPrefixes，严格按白名单匹配；
+        // 3. 仅当 AllowedRemoteIpPrefixes 为空时，回退至私网/链路本地地址兜底。
+        internal static bool HasAllowedRemoteIpPrefix(string remoteIP, AppConfig? cfg = null, Func<string, bool>? isLocalIpCheck = null)
         {
             if (string.IsNullOrWhiteSpace(remoteIP))
                 return false;
 
-            if (IsLocalIpAddress(remoteIP))
+            var activeConfig = cfg ?? config;
+            string normalizedIp = remoteIP.Trim();
+            if (IPAddress.TryParse(normalizedIp, out IPAddress? parsed) && parsed != null)
+                normalizedIp = NormalizeIpAddress(parsed);
+
+            if ((isLocalIpCheck ?? IsLocalIpAddress)(normalizedIp))
                 return false;
 
-            foreach (string ignoredPrefix in config.IgnoredRemoteIpPrefixes)
+            foreach (string ignoredPrefix in activeConfig.IgnoredRemoteIpPrefixes)
             {
-                if (!string.IsNullOrWhiteSpace(ignoredPrefix) &&
-                    remoteIP.StartsWith(ignoredPrefix, StringComparison.OrdinalIgnoreCase))
+                if (MatchesIpPrefix(normalizedIp, ignoredPrefix))
                     return false;
             }
 
-            foreach (string allowedPrefix in config.AllowedRemoteIpPrefixes)
+            bool hasAllowedWhitelist = false;
+            foreach (string allowedPrefix in activeConfig.AllowedRemoteIpPrefixes)
             {
-                if (!string.IsNullOrWhiteSpace(allowedPrefix) &&
-                    remoteIP.StartsWith(allowedPrefix, StringComparison.OrdinalIgnoreCase))
+                if (string.IsNullOrWhiteSpace(allowedPrefix))
+                    continue;
+                hasAllowedWhitelist = true;
+                if (MatchesIpPrefix(normalizedIp, allowedPrefix))
                     return true;
             }
 
-            // Fallback: any RFC 1918 private IP (not local) is treated as phone connection
-            if (IsPrivateIpAddress(remoteIP))
-                return true;
+            if (hasAllowedWhitelist)
+                return false;
 
-            return false;
+            // 仅在未配置任何允许前缀时，回退为 RFC 1918 私网 / IPv6 链路本地与 ULA 地址
+            return IsPrivateIpAddress(normalizedIp);
         }
 
-        // RFC 1918 private IPv4 address check
-        private static bool IsPrivateIpAddress(string ipStr)
+        // RFC 1918 IPv4 私网 + IPv6 链路本地 (fe80::/10) 与唯一本地地址 (fc00::/7) 判断
+        internal static bool IsPrivateIpAddress(string ipStr)
         {
             if (!IPAddress.TryParse(ipStr, out IPAddress? addr) || addr is null)
                 return false;
 
-            if (addr.AddressFamily != AddressFamily.InterNetwork)
-                return false;
+            if (addr.IsIPv4MappedToIPv6)
+                addr = addr.MapToIPv4();
 
-            byte[] bytes = addr.GetAddressBytes();
-            if (bytes.Length != 4)
-                return false;
+            if (addr.AddressFamily == AddressFamily.InterNetwork)
+            {
+                byte[] bytes = addr.GetAddressBytes();
+                if (bytes.Length != 4)
+                    return false;
 
-            // 10.0.0.0/8
-            if (bytes[0] == 10) return true;
-            // 172.16.0.0/12
-            if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) return true;
-            // 192.168.0.0/16
-            if (bytes[0] == 192 && bytes[1] == 168) return true;
+                // 10.0.0.0/8
+                if (bytes[0] == 10) return true;
+                // 172.16.0.0/12
+                if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) return true;
+                // 192.168.0.0/16
+                if (bytes[0] == 192 && bytes[1] == 168) return true;
+                return false;
+            }
+
+            if (addr.AddressFamily == AddressFamily.InterNetworkV6)
+            {
+                if (addr.IsIPv6LinkLocal)
+                    return true;
+                byte[] bytes = addr.GetAddressBytes();
+                if (bytes.Length == 16 && (bytes[0] & 0xFE) == 0xFC) // fc00::/7 ULA
+                    return true;
+            }
 
             return false;
         }
@@ -349,16 +545,28 @@ namespace OLock
             if (!IPAddress.TryParse(ipAddress, out IPAddress? parsedAddress) || parsedAddress is null)
                 return false;
 
+            if (parsedAddress.IsIPv4MappedToIPv6)
+                parsedAddress = parsedAddress.MapToIPv4();
+
             if (IPAddress.IsLoopback(parsedAddress))
                 return true;
 
-            return GetLocalIpAddresses().Contains(parsedAddress.ToString());
+            string normalized = NormalizeIpAddress(parsedAddress);
+            return GetLocalIpAddresses().Contains(normalized);
         }
 
         private static HashSet<string> GetLocalIpAddresses()
         {
-            if ((DateTime.UtcNow - localIpAddressesLoadedAt).TotalSeconds < 60 && localIpAddresses.Count > 0)
-                return localIpAddresses;
+            long nowTick = Environment.TickCount64;
+            lock (localIpLock)
+            {
+                if (localIpAddressesLoadedAtTick >= 0 &&
+                    (nowTick - localIpAddressesLoadedAtTick) < 60_000 &&
+                    localIpAddresses.Count > 0)
+                {
+                    return localIpAddresses;
+                }
+            }
 
             var addresses = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -371,16 +579,22 @@ namespace OLock
 
                     foreach (UnicastIPAddressInformation address in networkInterface.GetIPProperties().UnicastAddresses)
                     {
-                        if (address.Address.AddressFamily == AddressFamily.InterNetwork)
-                            addresses.Add(address.Address.ToString());
+                        if (address.Address.AddressFamily == AddressFamily.InterNetwork ||
+                            address.Address.AddressFamily == AddressFamily.InterNetworkV6)
+                        {
+                            addresses.Add(NormalizeIpAddress(address.Address));
+                        }
                     }
                 }
             }
             catch { }
 
-            localIpAddresses = addresses;
-            localIpAddressesLoadedAt = DateTime.UtcNow;
-            return localIpAddresses;
+            lock (localIpLock)
+            {
+                localIpAddresses = addresses;
+                localIpAddressesLoadedAtTick = Environment.TickCount64;
+                return localIpAddresses;
+            }
         }
     }
 }
