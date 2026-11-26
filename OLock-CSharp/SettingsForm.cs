@@ -97,9 +97,16 @@ namespace OLock
             form.Controls.Add(numRetention);
             y += 32;
 
-            // 允许的 IP 前缀
+            // 允许的 IP 前缀（留空 = 自动匹配所有私网与局域网 IP）
             form.Controls.Add(new Label { Text = Tr("settings_allowed_prefixes"), Left = 10, Top = y + 3, Width = labelW });
-            var txtAllowed = new TextBox { Left = inputX, Top = y, Width = inputW, Text = string.Join(",", currentConfig.AllowedRemoteIpPrefixes) };
+            var txtAllowed = new TextBox
+            {
+                Left = inputX,
+                Top = y,
+                Width = inputW,
+                Text = string.Join(",", currentConfig.AllowedRemoteIpPrefixes),
+                PlaceholderText = Tr("settings_allowed_prefixes_hint")
+            };
             form.Controls.Add(txtAllowed);
             y += 32;
 

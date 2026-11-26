@@ -38,7 +38,7 @@ namespace OLock.Tests
             Assert.Equal(60, c.WarmupSeconds);
             Assert.Equal(30, c.MinWarmupSeconds);
             Assert.Equal(600, c.MaxWarmupSeconds);
-            Assert.Equal(new[] { "192.168.", "10." }, c.AllowedRemoteIpPrefixes);
+            Assert.Empty(c.AllowedRemoteIpPrefixes);
             Assert.Empty(c.IgnoredRemoteIpPrefixes);
         }
 
@@ -66,14 +66,21 @@ namespace OLock.Tests
         }
 
         [Fact]
-        public void Normalize_EmptyPrefixes_FallBackToDefaults()
+        public void Normalize_EmptyPrefixes_PreservedAsEmptyForPrivateNetworkAutoMatch()
         {
             var c = AppConfig.CreateDefault();
-            c.AllowedRemoteIpPrefixes = Array.Empty<string>();
+            c.AllowedRemoteIpPrefixes = new[] { "  ", "" };
             c.IgnoredRemoteIpPrefixes = null!;
             c.Normalize();
-            Assert.Equal(new[] { "192.168.", "10." }, c.AllowedRemoteIpPrefixes);
+            Assert.Empty(c.AllowedRemoteIpPrefixes);
             Assert.Empty(c.IgnoredRemoteIpPrefixes);
+
+            // 经 Normalize() 后的默认配置必须能匹配 192.168 / 10 / 172.16 / IPv6 链路本地，且拒绝公网 IP
+            Assert.True(TcpConnectionChecker.HasAllowedRemoteIpPrefix("192.168.1.5", c, _ => false));
+            Assert.True(TcpConnectionChecker.HasAllowedRemoteIpPrefix("10.0.0.8", c, _ => false));
+            Assert.True(TcpConnectionChecker.HasAllowedRemoteIpPrefix("172.16.12.34", c, _ => false));
+            Assert.True(TcpConnectionChecker.HasAllowedRemoteIpPrefix("fe80::1234", c, _ => false));
+            Assert.False(TcpConnectionChecker.HasAllowedRemoteIpPrefix("8.8.8.8", c, _ => false));
         }
 
         [Theory]

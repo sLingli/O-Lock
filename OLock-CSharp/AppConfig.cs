@@ -35,8 +35,8 @@ namespace OLock
                 WarmupSeconds = 60,
                 MinWarmupSeconds = 30,
                 MaxWarmupSeconds = 600,
-                AllowedRemoteIpPrefixes = new[] { "192.168.", "10." },
-                IgnoredRemoteIpPrefixes = new string[0],
+                AllowedRemoteIpPrefixes = Array.Empty<string>(),
+                IgnoredRemoteIpPrefixes = Array.Empty<string>(),
                 SleepCommand = "rundll32.exe",
                 SleepArguments = "powrprof.dll,SetSuspendState 0,1,0",
                 LogRetentionDays = 7,
@@ -57,7 +57,9 @@ namespace OLock
             MaxWarmupSeconds = Clamp(MaxWarmupSeconds, MinWarmupSeconds, 3600, 600);
             WarmupSeconds = Clamp(WarmupSeconds, MinWarmupSeconds, MaxWarmupSeconds, 60);
 
-            AllowedRemoteIpPrefixes = NormalizeList(AllowedRemoteIpPrefixes, new[] { "192.168.", "10." });
+            // AllowedRemoteIpPrefixes 允许为空：空数组表示自动匹配所有私网与局域网地址 (RFC 1918 + IPv6 链路本地/ULA)；
+            // 非空时作为严格白名单，仅放行用户显式列出的前缀。
+            AllowedRemoteIpPrefixes = NormalizeList(AllowedRemoteIpPrefixes, Array.Empty<string>());
             IgnoredRemoteIpPrefixes = NormalizeList(IgnoredRemoteIpPrefixes, Array.Empty<string>());
 
             if (string.IsNullOrWhiteSpace(SleepCommand))
