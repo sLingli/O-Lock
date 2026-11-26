@@ -144,29 +144,18 @@ namespace OLock
 
             saveBtn.Click += (s, e) =>
             {
-                // 先构建并 Normalize 新配置，再原子替换全局快照，避免后台线程读到未规整的中间状态
-                var nextConfig = new AppConfig
-                {
-                    AppProcessName = txtProcess.Text.Trim(),
-                    OfflineSeconds = (int)numThreshold.Value,
-                    WarmupSeconds = (int)numWarmup.Value,
-                    MinWarmupSeconds = currentConfig.MinWarmupSeconds,
-                    MaxWarmupSeconds = currentConfig.MaxWarmupSeconds,
-                    AllowedRemoteIpPrefixes = txtAllowed.Text.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries),
-                    IgnoredRemoteIpPrefixes = txtIgnored.Text.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries),
-                    SleepCommand = txtSleepCmd.Text.Trim(),
-                    SleepArguments = txtSleepArgs.Text,
-                    LogRetentionDays = (int)numRetention.Value,
-                    LogVerbose = chkVerbose.Checked,
-                    CheckUpdatesOnStartup = chkCheckUpdates.Checked
-                };
-                nextConfig.Normalize();
-
-                config = nextConfig;
-                monitor?.UpdateConfig(nextConfig);
-                SaveSettings();
-                CleanupExpiredEntries(); // 立即按新的保留天数清理
-                LogInfo("Config", "Settings saved");
+                ApplySettingsFromFields(
+                    currentConfig,
+                    txtProcess.Text,
+                    (int)numThreshold.Value,
+                    (int)numWarmup.Value,
+                    txtAllowed.Text,
+                    txtIgnored.Text,
+                    txtSleepCmd.Text,
+                    txtSleepArgs.Text,
+                    (int)numRetention.Value,
+                    chkVerbose.Checked,
+                    chkCheckUpdates.Checked);
                 form.Close();
             };
 
@@ -176,6 +165,46 @@ namespace OLock
             form.Controls.Add(cancelBtn);
             form.Show();
             form.Activate();
+        }
+
+        // 先构建并 Normalize 新配置，再原子替换全局快照并同步状态机，避免后台线程读到未规整的中间状态
+        internal static AppConfig ApplySettingsFromFields(
+            AppConfig baseConfig,
+            string processName,
+            int offlineSeconds,
+            int warmupSeconds,
+            string allowedPrefixesCsv,
+            string ignoredPrefixesCsv,
+            string sleepCommand,
+            string sleepArguments,
+            int logRetentionDays,
+            bool logVerbose,
+            bool checkUpdatesOnStartup,
+            string registrySubKey = DefaultRegistrySubKey)
+        {
+            var nextConfig = new AppConfig
+            {
+                AppProcessName = processName.Trim(),
+                OfflineSeconds = offlineSeconds,
+                WarmupSeconds = warmupSeconds,
+                MinWarmupSeconds = baseConfig.MinWarmupSeconds,
+                MaxWarmupSeconds = baseConfig.MaxWarmupSeconds,
+                AllowedRemoteIpPrefixes = allowedPrefixesCsv.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries),
+                IgnoredRemoteIpPrefixes = ignoredPrefixesCsv.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries),
+                SleepCommand = sleepCommand.Trim(),
+                SleepArguments = sleepArguments,
+                LogRetentionDays = logRetentionDays,
+                LogVerbose = logVerbose,
+                CheckUpdatesOnStartup = checkUpdatesOnStartup
+            };
+            nextConfig.Normalize();
+
+            config = nextConfig;
+            monitor?.UpdateConfig(nextConfig);
+            SaveSettings(registrySubKey);
+            CleanupExpiredEntries(); // 立即按新的保留天数清理
+            LogInfo("Config", "Settings saved");
+            return nextConfig;
         }
     }
 }

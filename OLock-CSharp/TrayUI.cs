@@ -207,6 +207,7 @@ namespace OLock
             UpdateForm.ShowUpdateWindow(availableUpdate);
         }
 
+        internal static NotifyIcon? TrayIconForTest => trayIcon;
         internal static bool HasPendingMenuRebuild => pendingMenuRebuild;
 
         private static void ScheduleContextMenuRebuild()

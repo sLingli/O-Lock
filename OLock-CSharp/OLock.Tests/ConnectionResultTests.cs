@@ -1,4 +1,7 @@
+using System;
 using System.Collections.Generic;
+using System.Net;
+using System.Runtime.InteropServices;
 using OLock;
 
 namespace OLock.Tests
@@ -147,6 +150,111 @@ namespace OLock.Tests
             Assert.True(TcpConnectionChecker.HasAllowedRemoteIpPrefix("192.168.1.10", cfg, _ => false)); // 忽略 192.168.1.1 不误伤 .10
             Assert.False(TcpConnectionChecker.HasAllowedRemoteIpPrefix("192.168.1.25", cfg, ip => ip == "192.168.1.25"));
             Assert.True(TcpConnectionChecker.HasAllowedRemoteIpPrefix("::ffff:192.168.1.88", cfg, _ => false));
+        }
+
+        [Fact]
+        public void ScanTcpV4Table_ParsesUnmanagedMibRowOffsetsCorrectly()
+        {
+            // MIB_TCPROW_OWNER_PID: 24 字节/行 [state@0, localAddr@4, localPort@8, remoteAddr@12, remotePort@16, owningPid@20]
+            const int rowSize = 24;
+            const int entryCount = 4;
+            int totalSize = sizeof(int) + entryCount * rowSize;
+            IntPtr buffer = Marshal.AllocHGlobal(totalSize);
+            try
+            {
+                // 清零整个缓冲区
+                for (int b = 0; b < totalSize; b++) Marshal.WriteByte(buffer, b, 0);
+                Marshal.WriteInt32(buffer, entryCount);
+
+                void WriteV4Row(int idx, int state, string remoteIp, int pid)
+                {
+                    IntPtr row = buffer + sizeof(int) + idx * rowSize;
+                    Marshal.WriteInt32(row + 0, state);
+                    byte[] ipBytes = IPAddress.Parse(remoteIp).GetAddressBytes();
+                    Marshal.Copy(ipBytes, 0, row + 12, 4);
+                    Marshal.WriteInt32(row + 20, pid);
+                }
+
+                WriteV4Row(0, state: 2, remoteIp: "192.168.8.10", pid: 4242); // LISTEN(2)，应忽略
+                WriteV4Row(1, state: 5, remoteIp: "192.168.8.11", pid: 9999); // 非目标 PID，应忽略
+                WriteV4Row(2, state: 5, remoteIp: "203.0.113.77", pid: 4242); // 目标 PID 公网连接，应计入样本
+                WriteV4Row(3, state: 5, remoteIp: "192.168.8.99", pid: 4242); // 目标 PID 命中私网连接
+
+                var cfg = AppConfig.CreateDefault();
+                var pids = new HashSet<uint> { 4242u };
+
+                var facts = TcpConnectionChecker.ScanTcpV4Table(buffer, totalSize, pids, cfg, collectDiagnostics: true);
+                Assert.Equal(2, facts.EstablishedCount);
+                Assert.Equal("192.168.8.99", facts.HitIp);
+                Assert.Equal(4242u, facts.HitPid);
+                Assert.Contains("203.0.113.77", facts.Samples);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+
+        [Fact]
+        public void ScanTcpV6Table_ParsesMappedIpv4AndNativeIpv6OffsetsCorrectly()
+        {
+            // MIB_TCP6ROW_OWNER_PID: 56 字节/行 [remoteAddr@24 (16B), state@48 (4B), owningPid@52 (4B)]
+            const int rowSize = 56;
+            const int entryCount = 2;
+            int totalSize = sizeof(int) + entryCount * rowSize;
+            IntPtr buffer = Marshal.AllocHGlobal(totalSize);
+            try
+            {
+                for (int b = 0; b < totalSize; b++) Marshal.WriteByte(buffer, b, 0);
+                Marshal.WriteInt32(buffer, entryCount);
+
+                void WriteV6Row(int idx, int state, string remoteIp, int pid)
+                {
+                    IntPtr row = buffer + sizeof(int) + idx * rowSize;
+                    byte[] ipBytes = IPAddress.Parse(remoteIp).GetAddressBytes();
+                    Marshal.Copy(ipBytes, 0, row + 24, 16);
+                    Marshal.WriteInt32(row + 48, state);
+                    Marshal.WriteInt32(row + 52, pid);
+                }
+
+                WriteV6Row(0, state: 5, remoteIp: "::ffff:172.16.4.20", pid: 7777);
+                WriteV6Row(1, state: 5, remoteIp: "fe80::1a2b:3c4d", pid: 7777);
+
+                var cfg = AppConfig.CreateDefault(); // 默认空允许列表自动匹配 172.16 与 fe80::
+                var pids = new HashSet<uint> { 7777u };
+
+                var facts = TcpConnectionChecker.ScanTcpV6Table(buffer, totalSize, pids, cfg, collectDiagnostics: true);
+                Assert.Equal(2, facts.EstablishedCount);
+                Assert.Equal("172.16.4.20", facts.HitIp); // IPv4-mapped IPv6 自动解包为 IPv4
+                Assert.Equal(7777u, facts.HitPid);
+
+                // 当仅配置 fe80: 白名单时，应跳过 172.16.4.20 并命中第 2 行的原生 IPv6 链路本地地址
+                cfg.AllowedRemoteIpPrefixes = new[] { "fe80:" };
+                var v6OnlyFacts = TcpConnectionChecker.ScanTcpV6Table(buffer, totalSize, pids, cfg, collectDiagnostics: true);
+                Assert.Equal(2, v6OnlyFacts.EstablishedCount);
+                Assert.Equal("fe80::1a2b:3c4d", v6OnlyFacts.HitIp);
+                Assert.Contains("172.16.4.20", v6OnlyFacts.Samples);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+
+        [Fact]
+        public void GetLocalIpAddresses_CachesSnapshotAndRefreshesAfterInvalidation()
+        {
+            TcpConnectionChecker.InvalidateLocalIpCache();
+            var first = TcpConnectionChecker.GetLocalIpAddresses();
+            var second = TcpConnectionChecker.GetLocalIpAddresses();
+            Assert.NotNull(first);
+            if (first.Count > 0)
+                Assert.Same(first, second); // 60 秒内命中缓存复用同一不可变快照
+
+            TcpConnectionChecker.InvalidateLocalIpCache();
+            var refreshed = TcpConnectionChecker.GetLocalIpAddresses();
+            Assert.NotNull(refreshed);
+            Assert.NotSame(first, refreshed); // 失效后应重新采集生成新快照
         }
     }
 }

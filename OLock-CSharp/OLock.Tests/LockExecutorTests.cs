@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Threading.Tasks;
 using OLock;
 
 namespace OLock.Tests
@@ -78,6 +80,50 @@ namespace OLock.Tests
             finally
             {
                 Localization.currentLang = prevLang;
+            }
+        }
+
+        [Fact]
+        public async Task RealLockExecutor_WhenLockOrScreenOffFails_LogsWin32ErrorsWithoutThrowing()
+        {
+            string tempLog = Path.Combine(Path.GetTempPath(), $"olock_real_lock_err_{Guid.NewGuid():N}.log");
+            string? prevLogPath = Logging.SwapLogFilePath(tempLog);
+            bool prevScreenOff = Program.autoScreenOff;
+            var screenOffDone = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            try
+            {
+                Program.autoScreenOff = true;
+                var executor = new RealLockExecutor(
+                    lockWorkStation: () => false,
+                    sendMessageTimeout: (_, _, _, _, _, _) =>
+                    {
+                        screenOffDone.TrySetResult(true);
+                        return IntPtr.Zero;
+                    },
+                    getLastWin32Error: () => 1460, // ERROR_TIMEOUT
+                    screenOffDelayMs: 0);
+
+                var ex = Record.Exception(() => executor.ExecuteLock());
+                Assert.Null(ex);
+
+                await screenOffDone.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                // 给后台 Task 极短时间写完日志行
+                for (int i = 0; i < 20; i++)
+                {
+                    if (Logging.ReadLogSnapshotLines().Any(l => l.Contains("Screen-off broadcast timed out or failed")))
+                        break;
+                    await Task.Delay(15);
+                }
+
+                string[] lines = Logging.ReadLogSnapshotLines();
+                Assert.Contains(lines, l => l.Contains("ERROR:") && l.Contains("LockWorkStation failed (Win32 error 1460)"));
+                Assert.Contains(lines, l => l.Contains("ERROR:") && l.Contains("Screen-off broadcast timed out or failed (Win32 error 1460)"));
+            }
+            finally
+            {
+                Program.autoScreenOff = prevScreenOff;
+                Logging.SwapLogFilePath(prevLogPath);
+                try { if (File.Exists(tempLog)) File.Delete(tempLog); } catch { }
             }
         }
     }

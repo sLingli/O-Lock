@@ -45,12 +45,35 @@ namespace OLock
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool LockWorkStation();
 
+        private readonly Func<bool> lockWorkStationFn;
+        private readonly Func<IntPtr, uint, IntPtr, IntPtr, uint, uint, IntPtr> sendMessageTimeoutFn;
+        private readonly Func<int> getLastWin32ErrorFn;
+        private readonly int screenOffDelayMs;
+
+        public RealLockExecutor()
+            : this(null, null, null, 500)
+        {
+        }
+
+        internal RealLockExecutor(
+            Func<bool>? lockWorkStation,
+            Func<IntPtr, uint, IntPtr, IntPtr, uint, uint, IntPtr>? sendMessageTimeout,
+            Func<int>? getLastWin32Error,
+            int screenOffDelayMs = 500)
+        {
+            lockWorkStationFn = lockWorkStation ?? LockWorkStation;
+            sendMessageTimeoutFn = sendMessageTimeout ?? ((hWnd, msg, wParam, lParam, flags, timeout) =>
+                SendMessageTimeout(hWnd, msg, wParam, lParam, flags, timeout, out _));
+            getLastWin32ErrorFn = getLastWin32Error ?? Marshal.GetLastWin32Error;
+            this.screenOffDelayMs = Math.Max(0, screenOffDelayMs);
+        }
+
         public void ExecuteLock()
         {
             LogInfo("Action", "Executing screen lock");
-            if (!LockWorkStation())
+            if (!lockWorkStationFn())
             {
-                int err = Marshal.GetLastWin32Error();
+                int err = getLastWin32ErrorFn();
                 LogError("Action", $"LockWorkStation failed (Win32 error {err})");
             }
 
@@ -61,18 +84,18 @@ namespace OLock
                 {
                     try
                     {
-                        Thread.Sleep(500);
-                        IntPtr result = SendMessageTimeout(
+                        if (screenOffDelayMs > 0)
+                            Thread.Sleep(screenOffDelayMs);
+                        IntPtr result = sendMessageTimeoutFn(
                             (IntPtr)HWND_BROADCAST,
                             WM_SYSCOMMAND,
                             (IntPtr)SC_MONITORPOWER,
                             (IntPtr)MONITOR_OFF,
                             SMTO_ABORTIFHUNG,
-                            SCREEN_OFF_BROADCAST_TIMEOUT_MS,
-                            out _);
+                            SCREEN_OFF_BROADCAST_TIMEOUT_MS);
                         if (result == IntPtr.Zero)
                         {
-                            int err = Marshal.GetLastWin32Error();
+                            int err = getLastWin32ErrorFn();
                             LogError("Action", $"Screen-off broadcast timed out or failed (Win32 error {err})");
                         }
                         else

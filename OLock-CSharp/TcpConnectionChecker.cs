@@ -320,7 +320,7 @@ namespace OLock
             => EvaluateConnection(true, facts.EstablishedCount, facts.HitIp, facts.HitPid, facts.Samples);
 
         // 扫描原始产物：建立连接条数、命中信息、未命中样本
-        private readonly struct TcpScanFacts
+        internal readonly struct TcpScanFacts
         {
             public readonly int EstablishedCount;
             public readonly string? HitIp;
@@ -337,7 +337,7 @@ namespace OLock
         }
 
         // 扫描内核 IPv4 TCP 连接表，收集主程序进程的连接事实
-        private static TcpScanFacts ScanTcpV4Table(IntPtr buffer, int size, HashSet<uint> pids, AppConfig cfg, bool collectDiagnostics)
+        internal static TcpScanFacts ScanTcpV4Table(IntPtr buffer, int size, HashSet<uint> pids, AppConfig cfg, bool collectDiagnostics)
         {
             int numEntries = Marshal.ReadInt32(buffer);
             int maxEntries = (size - sizeof(int)) / TCP_ROW_SIZE;
@@ -378,7 +378,7 @@ namespace OLock
         }
 
         // 扫描内核 IPv6 / 双栈映射 TCP 连接表
-        private static TcpScanFacts ScanTcpV6Table(IntPtr buffer, int size, HashSet<uint> pids, AppConfig cfg, bool collectDiagnostics)
+        internal static TcpScanFacts ScanTcpV6Table(IntPtr buffer, int size, HashSet<uint> pids, AppConfig cfg, bool collectDiagnostics)
         {
             int numEntries = Marshal.ReadInt32(buffer);
             int maxEntries = (size - sizeof(int)) / TCP6_ROW_SIZE;
@@ -555,7 +555,7 @@ namespace OLock
             return GetLocalIpAddresses().Contains(normalized);
         }
 
-        private static HashSet<string> GetLocalIpAddresses()
+        internal static HashSet<string> GetLocalIpAddresses()
         {
             long nowTick = Environment.TickCount64;
             lock (localIpLock)

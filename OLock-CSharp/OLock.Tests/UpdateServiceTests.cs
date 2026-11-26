@@ -327,13 +327,14 @@ namespace OLock.Tests
             Directory.CreateDirectory(trickyDir);
             string targetPath = Path.Combine(trickyDir, "OLock.exe");
             string pendingPath = targetPath + ".new";
+            string? batPath = null;
 
             try
             {
                 await File.WriteAllTextAsync(targetPath, "old-version");
                 await File.WriteAllTextAsync(pendingPath, "new-version-1.5.0");
 
-                var psi = UpdateService.CreateFallbackUpdaterStartInfo(pendingPath, targetPath, out string batPath);
+                var psi = UpdateService.CreateFallbackUpdaterStartInfo(pendingPath, targetPath, out batPath);
                 Assert.True(File.Exists(batPath));
 
                 // 测试模式下跳过拉起 GUI 进程并缩短等待间隔，真实跑完 cmd.exe 替换与自清理流程
@@ -351,41 +352,73 @@ namespace OLock.Tests
             }
             finally
             {
+                try { if (batPath != null && File.Exists(batPath)) File.Delete(batPath); } catch { }
                 try { Directory.Delete(trickyDir, recursive: true); } catch { }
             }
         }
 
         [Fact]
-        public async Task CopyStreamWithTimeoutsAsync_ThrottlesProgressAndReportsFinalBytes()
+        public async Task CopyStreamWithTimeoutsAsync_ThrottlesProgressWithClockAndCatchesFinalBytes()
         {
-            const int totalSize = 2 * 1024 * 1024; // 2 MB = 32 chunks of 64 KB
-            using var source = new MemoryStream(new byte[totalSize]);
-            using var dest = new MemoryStream();
-            var reports = new System.Collections.Generic.List<UpdateDownloadProgress>();
-            var progress = new SyncProgress<UpdateDownloadProgress>(reports.Add);
+            // 1. 已知总大小：8 块各 64 KB，前 3 块间隔 <100ms 应被节流，第 4 块跨越 120ms 应汇报，第 8 块到达 100% 必汇报
+            const int chunkSize = 64 * 1024;
+            long[] chunkTimeSteps = { 1000, 1020, 1040, 1130, 1150, 1410, 1430, 1440 };
+            int stepIndex = 0;
+            long fakeNow = 1000;
+            using (var source = new SteppingChunkStream(chunkSize, chunkTimeSteps.Length, () => fakeNow = chunkTimeSteps[stepIndex++]))
+            using (var dest = new MemoryStream())
+            {
+                var reports = new System.Collections.Generic.List<UpdateDownloadProgress>();
+                await UpdateService.CopyStreamWithTimeoutsAsync(
+                    source,
+                    dest,
+                    totalBytes: chunkSize * chunkTimeSteps.Length,
+                    idleReadTimeout: TimeSpan.FromSeconds(5),
+                    overallTimeout: TimeSpan.FromSeconds(10),
+                    progress: new SyncProgress<UpdateDownloadProgress>(reports.Add),
+                    clockMs: () => fakeNow);
 
-            await UpdateService.CopyStreamWithTimeoutsAsync(
-                source,
-                dest,
-                totalBytes: totalSize,
-                idleReadTimeout: TimeSpan.FromSeconds(5),
-                overallTimeout: TimeSpan.FromSeconds(10),
-                progress: progress);
+                Assert.Equal(chunkSize * chunkTimeSteps.Length, dest.Length);
+                // 预期汇报点：chunk1(首块)、chunk4(>=100ms)、chunk6(>=250ms)、chunk8(终块100%)
+                Assert.Equal(4, reports.Count);
+                Assert.Equal(100, reports[^1].Percentage);
+                Assert.Equal(chunkSize * chunkTimeSteps.Length, reports[^1].BytesReceived);
+            }
 
-            Assert.Equal(totalSize, dest.Length);
-            Assert.NotEmpty(reports);
-            Assert.True(reports.Count < 16, $"Expected throttled reports (<16), got {reports.Count}");
-            Assert.Equal(totalSize, reports[^1].BytesReceived);
-            Assert.Equal(100, reports[^1].Percentage);
+            // 2. 未知总大小 (totalBytes=0)：最后一块距离上次汇报 <100ms，验证循环外补报分支确保最终字节数送达
+            long[] unknownSteps = { 2000, 2020, 2040 };
+            int idx2 = 0;
+            long now2 = 2000;
+            using (var source2 = new SteppingChunkStream(chunkSize, unknownSteps.Length, () => now2 = unknownSteps[idx2++]))
+            using (var dest2 = new MemoryStream())
+            {
+                var reports2 = new System.Collections.Generic.List<UpdateDownloadProgress>();
+                await UpdateService.CopyStreamWithTimeoutsAsync(
+                    source2,
+                    dest2,
+                    totalBytes: 0,
+                    idleReadTimeout: TimeSpan.FromSeconds(5),
+                    overallTimeout: TimeSpan.FromSeconds(10),
+                    progress: new SyncProgress<UpdateDownloadProgress>(reports2.Add),
+                    clockMs: () => now2);
+
+                Assert.Equal(2, reports2.Count); // 首块汇报 + 循环外终值补报
+                Assert.Equal(chunkSize * unknownSteps.Length, reports2[^1].BytesReceived);
+            }
         }
 
         [Fact]
-        public async Task CheckForUpdateAsync_WhenCancelledByCaller_ReturnsCancelledWithoutErrorLog()
+        public async Task CheckForUpdateAsync_WhenCancelledByCaller_LogsDebugWithoutError()
         {
             string tempLog = Path.Combine(Path.GetTempPath(), $"olock_update_cancel_{Guid.NewGuid():N}.log");
+            var prevConfig = Program.config;
             string? prevLogPath = Logging.SwapLogFilePath(tempLog);
             try
             {
+                var cfg = AppConfig.CreateDefault();
+                cfg.LogVerbose = true; // 开启详细日志以验证真正写入了 DEBUG 而非静默空文件
+                Program.config = cfg;
+
                 using var cts = new CancellationTokenSource();
                 cts.Cancel();
 
@@ -394,12 +427,93 @@ namespace OLock.Tests
                 Assert.Equal("Cancelled.", result.ErrorMessage);
 
                 string[] logLines = Logging.ReadLogSnapshotLines();
+                Assert.Contains(logLines, l => l.Contains("DEBUG:") && l.Contains("cancelled"));
                 Assert.DoesNotContain(logLines, l => l.Contains("ERROR:"));
             }
             finally
             {
                 Logging.SwapLogFilePath(prevLogPath);
+                Program.config = prevConfig;
                 try { if (File.Exists(tempLog)) File.Delete(tempLog); } catch { }
+            }
+        }
+
+        [Fact]
+        public void RestartIntoUpdatedExecutable_WhenProcessStartFails_PreservesMonitorAndTryRollbackRestoresExe()
+        {
+            var prevStarter = Program.processStarter;
+            var prevTimer = Program.monitorTimer;
+            using var testTimer = new System.Windows.Forms.Timer();
+            string tempDir = Path.Combine(Path.GetTempPath(), $"olock_rollback_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            string targetExe = Path.Combine(tempDir, "OLock.exe");
+            string oldExe = targetExe + ".old";
+            try
+            {
+                Program.ResetShutdownStateForTest();
+                Program.monitorTimer = testTimer;
+                testTimer.Start();
+
+                Program.processStarter = _ => throw new System.ComponentModel.Win32Exception("Blocked by antivirus");
+
+                Assert.Throws<System.ComponentModel.Win32Exception>(() =>
+                    Program.RestartIntoUpdatedExecutable(targetExe));
+
+                // 拉起失败时旧进程托盘/监控/关闭标志绝不能被破坏
+                Assert.False(Program.IsShuttingDown);
+                Assert.Same(testTimer, Program.monitorTimer);
+                Assert.True(testTimer.Enabled);
+
+                // 验证回滚函数可将 .old 原可执行文件安全恢复回原路径
+                File.WriteAllText(targetExe, "blocked-new-exe");
+                File.WriteAllText(oldExe, "working-old-exe");
+                UpdateService.TryRollbackExecutable(targetExe, oldExe);
+
+                Assert.Equal("working-old-exe", File.ReadAllText(targetExe));
+                Assert.False(File.Exists(oldExe));
+                Assert.False(File.Exists(targetExe + ".failed"));
+            }
+            finally
+            {
+                Program.processStarter = prevStarter;
+                Program.ResetShutdownStateForTest();
+                testTimer.Stop();
+                Program.monitorTimer = prevTimer;
+                try { Directory.Delete(tempDir, recursive: true); } catch { }
+            }
+        }
+
+        private sealed class SteppingChunkStream : Stream
+        {
+            private readonly int chunkSize;
+            private int remainingChunks;
+            private readonly Action onChunkRead;
+
+            public SteppingChunkStream(int chunkSize, int chunkCount, Action onChunkRead)
+            {
+                this.chunkSize = chunkSize;
+                remainingChunks = chunkCount;
+                this.onChunkRead = onChunkRead;
+            }
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                if (remainingChunks <= 0)
+                    return ValueTask.FromResult(0);
+                remainingChunks--;
+                onChunkRead();
+                return ValueTask.FromResult(Math.Min(chunkSize, buffer.Length));
             }
         }
 

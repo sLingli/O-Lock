@@ -255,5 +255,55 @@ namespace OLock.Tests
             }
         }
 
+        [Fact]
+        public void SettingsForm_ApplySettingsFromFields_AtomicallySwapsConfigAndSyncsMonitor()
+        {
+            string testKey = $@"Software\OLock_Test_{Guid.NewGuid():N}";
+            var prevConfig = Program.config;
+            var prevMonitor = Program.monitor;
+            try
+            {
+                var originalConfig = AppConfig.CreateDefault();
+                originalConfig.WarmupSeconds = 60;
+                Program.config = originalConfig;
+                Program.monitor = new MonitorStateMachine(originalConfig, _ => { }, _ => { });
+
+                // 保存新配置（传入超界的 WarmupSeconds=9999，应先 Normalize 钳制至 600 再原子替换引用）
+                var applied = SettingsForm.ApplySettingsFromFields(
+                    originalConfig,
+                    processName: "  NewConnect  ",
+                    offlineSeconds: 12,
+                    warmupSeconds: 9999,
+                    allowedPrefixesCsv: " 192.168.5. , 10.1. ",
+                    ignoredPrefixesCsv: " 192.168.5.1 ",
+                    sleepCommand: "rundll32.exe",
+                    sleepArguments: "powrprof.dll,SetSuspendState 0,1,0",
+                    logRetentionDays: 10,
+                    logVerbose: true,
+                    checkUpdatesOnStartup: false,
+                    registrySubKey: testKey);
+
+                // 旧对象未被原地篡改，全局 config 已切换为规整后的新实例
+                Assert.Equal("O+Connect", originalConfig.AppProcessName);
+                Assert.Equal(60, originalConfig.WarmupSeconds);
+                Assert.Same(applied, Program.config);
+                Assert.NotSame(originalConfig, Program.config);
+                Assert.Equal("NewConnect", applied.AppProcessName);
+                Assert.Equal(600, applied.WarmupSeconds);
+                Assert.Equal(new[] { "192.168.5.", "10.1." }, applied.AllowedRemoteIpPrefixes);
+                Assert.Equal(new[] { "192.168.5.1" }, applied.IgnoredRemoteIpPrefixes);
+
+                // 状态机已同步拿到新配置：进入缓冲期应使用新的 WarmupSeconds=600
+                Program.monitor.StartWarmup();
+                Assert.Equal(600, Program.monitor.WarmupRemaining);
+            }
+            finally
+            {
+                Program.monitor = prevMonitor;
+                Program.config = prevConfig;
+                Registry.CurrentUser.DeleteSubKeyTree(testKey, throwOnMissingSubKey: false);
+            }
+        }
+
     }
 }
