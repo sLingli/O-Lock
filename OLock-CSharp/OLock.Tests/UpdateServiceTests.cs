@@ -354,6 +354,61 @@ namespace OLock.Tests
             }
         }
 
+        [Fact]
+        public async Task CopyStreamWithTimeoutsAsync_ThrottlesProgressAndReportsFinalBytes()
+        {
+            const int totalSize = 2 * 1024 * 1024; // 2 MB = 32 chunks of 64 KB
+            using var source = new MemoryStream(new byte[totalSize]);
+            using var dest = new MemoryStream();
+            var reports = new System.Collections.Generic.List<UpdateDownloadProgress>();
+            var progress = new SyncProgress<UpdateDownloadProgress>(reports.Add);
+
+            await UpdateService.CopyStreamWithTimeoutsAsync(
+                source,
+                dest,
+                totalBytes: totalSize,
+                idleReadTimeout: TimeSpan.FromSeconds(5),
+                overallTimeout: TimeSpan.FromSeconds(10),
+                progress: progress);
+
+            Assert.Equal(totalSize, dest.Length);
+            Assert.NotEmpty(reports);
+            Assert.True(reports.Count < 16, $"Expected throttled reports (<16), got {reports.Count}");
+            Assert.Equal(totalSize, reports[^1].BytesReceived);
+            Assert.Equal(100, reports[^1].Percentage);
+        }
+
+        [Fact]
+        public async Task CheckForUpdateAsync_WhenCancelledByCaller_ReturnsCancelledWithoutErrorLog()
+        {
+            string tempLog = Path.Combine(Path.GetTempPath(), $"olock_update_cancel_{Guid.NewGuid():N}.log");
+            string? prevLogPath = Logging.SwapLogFilePath(tempLog);
+            try
+            {
+                using var cts = new CancellationTokenSource();
+                cts.Cancel();
+
+                var result = await UpdateService.CheckForUpdateAsync(cts.Token);
+                Assert.Equal(UpdateCheckStatus.Failed, result.Status);
+                Assert.Equal("Cancelled.", result.ErrorMessage);
+
+                string[] logLines = Logging.ReadLogSnapshotLines();
+                Assert.DoesNotContain(logLines, l => l.Contains("ERROR:"));
+            }
+            finally
+            {
+                Logging.SwapLogFilePath(prevLogPath);
+                try { if (File.Exists(tempLog)) File.Delete(tempLog); } catch { }
+            }
+        }
+
+        private sealed class SyncProgress<T> : IProgress<T>
+        {
+            private readonly Action<T> onReport;
+            public SyncProgress(Action<T> onReport) => this.onReport = onReport;
+            public void Report(T value) => onReport(value);
+        }
+
         private sealed class StalledReadStream : Stream
         {
             public override bool CanRead => true;

@@ -62,22 +62,40 @@ namespace OLock
         private static readonly TimeSpan DownloadOverallTimeout = TimeSpan.FromMinutes(10);
         private static readonly TimeSpan DownloadIdleReadTimeout = TimeSpan.FromSeconds(30);
 
-        private static readonly HttpClient httpClient = CreateHttpClient();
+        // API 与二进制下载使用隔离的 HttpClient：
+        // - apiHttpClient 开启压缩与 GitHub JSON Accept 头；
+        // - downloadHttpClient 关闭自动解压与 JSON 头，避免代理对 zip 附加编码导致 Content-Length 与已读字节不一致。
+        private static readonly HttpClient apiHttpClient = CreateHttpClient(forGitHubApi: true);
+        private static readonly HttpClient downloadHttpClient = CreateHttpClient(forGitHubApi: false);
 
-        private static HttpClient CreateHttpClient()
+        private static ProductInfoHeaderValue CreateUserAgentHeader()
+        {
+            string uaVersion = string.IsNullOrWhiteSpace(AppVersion) ? "1.0" : AppVersion.Trim();
+            try
+            {
+                return new ProductInfoHeaderValue(APP_NAME, uaVersion);
+            }
+            catch
+            {
+                return new ProductInfoHeaderValue(APP_NAME, "1.0");
+            }
+        }
+
+        private static HttpClient CreateHttpClient(bool forGitHubApi)
         {
             var handler = new SocketsHttpHandler
             {
-                AutomaticDecompression = DecompressionMethods.All,
-                ConnectTimeout = TimeSpan.FromSeconds(10)
+                AutomaticDecompression = forGitHubApi ? DecompressionMethods.All : DecompressionMethods.None,
+                ConnectTimeout = TimeSpan.FromSeconds(10),
+                PooledConnectionLifetime = TimeSpan.FromMinutes(2)
             };
             var client = new HttpClient(handler)
             {
                 Timeout = Timeout.InfiniteTimeSpan // 具体超时由各请求的 CancellationToken 控制
             };
-            string uaVersion = string.IsNullOrWhiteSpace(AppVersion) ? "1.0" : AppVersion;
-            client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue(APP_NAME, uaVersion));
-            client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+            client.DefaultRequestHeaders.UserAgent.Add(CreateUserAgentHeader());
+            if (forGitHubApi)
+                client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
             return client;
         }
 
@@ -113,7 +131,8 @@ namespace OLock
                 return Environment.ProcessPath;
             try
             {
-                return Process.GetCurrentProcess().MainModule?.FileName;
+                using var proc = Process.GetCurrentProcess();
+                return proc.MainModule?.FileName;
             }
             catch
             {
@@ -296,7 +315,7 @@ namespace OLock
 
             try
             {
-                using var response = await httpClient.GetAsync(LatestReleaseApiUrl, HttpCompletionOption.ResponseContentRead, timeoutCts.Token);
+                using var response = await apiHttpClient.GetAsync(LatestReleaseApiUrl, HttpCompletionOption.ResponseContentRead, timeoutCts.Token);
                 if (!response.IsSuccessStatusCode)
                 {
                     string err = $"HTTP {(int)response.StatusCode} ({response.ReasonPhrase})";
@@ -318,6 +337,17 @@ namespace OLock
                     LogInfo("Update", $"Update check result: {result.Status} (current={result.CurrentVersion}, latest={result.LatestVersion}, variant={variant})");
 
                 return result;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                LogDebug("Update", "Update check cancelled by caller");
+                return new UpdateCheckResult
+                {
+                    Status = UpdateCheckStatus.Failed,
+                    CurrentVersion = AppVersion,
+                    PackageVariant = variant,
+                    ErrorMessage = "Cancelled."
+                };
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
@@ -431,6 +461,9 @@ namespace OLock
 
             byte[] buffer = new byte[65536];
             long received = 0;
+            long lastReportTick = 0;
+            long lastReportedBytes = -1;
+            int lastReportedPct = -1;
 
             try
             {
@@ -444,7 +477,23 @@ namespace OLock
                     idleCts.CancelAfter(idleReadTimeout);
                     await destination.WriteAsync(buffer.AsMemory(0, read), idleCts.Token);
                     received += read;
-                    progress?.Report(new UpdateDownloadProgress(received, totalBytes));
+
+                    if (progress != null)
+                    {
+                        var current = new UpdateDownloadProgress(received, totalBytes);
+                        long nowTick = Environment.TickCount64;
+                        bool isFinal = totalBytes > 0 && received >= totalBytes;
+                        bool shouldReport = isFinal
+                            || lastReportTick == 0
+                            || (nowTick - lastReportTick >= 100 && (totalBytes <= 0 || current.Percentage != lastReportedPct || nowTick - lastReportTick >= 250));
+                        if (shouldReport)
+                        {
+                            progress.Report(current);
+                            lastReportTick = nowTick;
+                            lastReportedBytes = received;
+                            lastReportedPct = current.Percentage;
+                        }
+                    }
                 }
                 idleCts.CancelAfter(Timeout.InfiniteTimeSpan);
             }
@@ -454,6 +503,9 @@ namespace OLock
                     throw new TimeoutException($"Download exceeded maximum transfer time ({Math.Max(1, (int)overallTimeout.TotalSeconds)}s).");
                 throw new TimeoutException($"Download stalled (no data received for {Math.Max(1, (int)idleReadTimeout.TotalSeconds)}s).");
             }
+
+            if (progress != null && received > 0 && lastReportedBytes != received)
+                progress.Report(new UpdateDownloadProgress(received, totalBytes));
 
             if (totalBytes > 0 && received != totalBytes)
                 throw new IOException($"Incomplete download ({received} / {totalBytes} bytes).");
@@ -495,7 +547,7 @@ namespace OLock
                 HttpResponseMessage response;
                 try
                 {
-                    response = await httpClient.GetAsync(release.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, headerCts.Token);
+                    response = await downloadHttpClient.GetAsync(release.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, headerCts.Token);
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
