@@ -96,12 +96,25 @@ namespace OLock
         internal static System.Windows.Forms.Timer monitorTimer = null!;
         internal static bool isChecking = false;    // 当前是否处于后台连接检测中（供心跳诊断）
         private static int heartbeatTicks = 0;      // 详细模式心跳计数
-        private static bool isTickRunning = false;  // 整轮 Tick 防重入标志
+        private static Task<(bool AppRunning, bool? PhoneConnected)>? inFlightFactTask;
         private static int monitorGeneration = 0;   // 模式切换代次，丢弃状态变化前的在途检查结果
         private static SynchronizationContext? mainUiContext;
         private static Mutex? singleInstanceMutex;
         private static bool ownsSingleInstanceMutex;
         private static readonly CancellationTokenSource startupUpdateCts = new CancellationTokenSource();
+
+        // 可注入测试钩子（默认直连真实系统查询）
+        internal static Func<bool, Task<(bool AppRunning, bool? PhoneConnected)>> monitorFactsProvider = CheckMonitorFactsAsync;
+        internal static Func<bool> screenLockedProvider = IsScreenLocked;
+
+        internal static void SetMainUiContextForTest(SynchronizationContext? ctx) => mainUiContext = ctx;
+
+        internal static void ResetTickStateForTest()
+        {
+            inFlightFactTask = null;
+            isChecking = false;
+            heartbeatTicks = 0;
+        }
 
         // 状态机当前状态的英文描述 (心跳日志用)
         private static string DescribeMonitorState()
@@ -268,67 +281,83 @@ namespace OLock
         // MonitorTick 在 UI 线程上由 Forms.Timer 触发 (每 1 秒)，是断开演练之外唯一的驱动源。
         static async void MonitorTick(object? sender, EventArgs e) => await TickCoreAsync();
 
+        private static void AdvanceMonitorAndHeartbeat(bool screenLocked, bool appRunning, bool? phoneConnected)
+        {
+            var action = monitor.Tick(screenLocked, appRunning, phoneConnected);
+            if (action == MonitorAction.Lock)
+            {
+                if (autoSleep)
+                    lockExecutor.ExecuteSleep();
+                else
+                    lockExecutor.ExecuteLock();
+            }
+            UpdateIcon();
+
+            // 详细模式心跳：每 30 秒一条状态摘要，用于判断"卡住没有、卡在哪一步"
+            if (config.LogVerbose && !screenLocked && ++heartbeatTicks >= 30)
+            {
+                heartbeatTicks = 0;
+                int staleSeconds = monitor.GetSecondsSinceLastCheck();
+                LogDebug("Monitor", $"Heartbeat: {DescribeMonitorState()}, last success check: {staleSeconds}s ago, checking: {isChecking}");
+            }
+        }
+
         // TickCoreAsync 是监控内核：收集事实 (屏幕锁定/进程存活/手机连接) → 交给状态机决策 → 经执行器执行动作 → 刷新图标。
         // 返回 Task 供测试窗口 await，保证每次 Tick 完整走完后再读取最新状态。
-        // 整轮通过 isTickRunning 防重入，并通过 monitorGeneration 丢弃模式切换前的在途结果。
+        // 上一轮检测未结束时不重叠发起新扫描，但仍以 phoneConnected=null 推进状态机以保障过期保护与 30s 心跳诊断。
         internal static async Task TickCoreAsync()
         {
-            if (isTickRunning)
+            if (IsShuttingDown)
                 return;
 
-            isTickRunning = true;
             try
             {
-                int tickGen = monitorGeneration;
-                bool screenLocked = IsScreenLocked();
-
-                bool appRunning = false;
-                bool? phoneConnected = null;
-
-                if (!screenLocked)
+                bool screenLocked = screenLockedProvider();
+                if (screenLocked)
                 {
-                    bool needConnectionCheck = !monitor.IsWaitingForApp;
-                    isChecking = needConnectionCheck;
-                    try
+                    if (!monitor.WasLocked)
+                        monitorGeneration++;
+                    AdvanceMonitorAndHeartbeat(screenLocked: true, appRunning: false, phoneConnected: null);
+                    return;
+                }
+
+                // 若上一轮后台检测仍在途，不启动重叠扫描，但继续驱动状态机过期保护与心跳诊断
+                if (inFlightFactTask != null && !inFlightFactTask.IsCompleted)
+                {
+                    AdvanceMonitorAndHeartbeat(screenLocked: false, appRunning: !monitor.IsWaitingForApp, phoneConnected: null);
+                    return;
+                }
+
+                int tickGen = monitorGeneration;
+                bool needConnectionCheck = !monitor.IsWaitingForApp;
+                isChecking = needConnectionCheck;
+                var factTask = monitorFactsProvider(needConnectionCheck);
+                inFlightFactTask = factTask;
+
+                bool appRunning;
+                bool? phoneConnected;
+                try
+                {
+                    (appRunning, phoneConnected) = await factTask;
+                }
+                finally
+                {
+                    if (ReferenceEquals(inFlightFactTask, factTask))
                     {
-                        (appRunning, phoneConnected) = await CheckMonitorFactsAsync(needConnectionCheck);
-                    }
-                    finally
-                    {
+                        inFlightFactTask = null;
                         isChecking = false;
                     }
-
-                    // 后台检测期间若发生了演练启停、休眠唤醒或程序退出，丢弃已过时的在途结果
-                    if (tickGen != monitorGeneration)
-                        return;
                 }
 
-                var action = monitor.Tick(screenLocked, appRunning, phoneConnected);
-                if (action == MonitorAction.Lock)
-                {
-                    if (autoSleep)
-                        lockExecutor.ExecuteSleep();
-                    else
-                        lockExecutor.ExecuteLock();
-                }
-                UpdateIcon();
+                // 后台检测期间若发生了锁屏、演练启停、休眠唤醒或程序退出，丢弃已过时的在途结果
+                if (tickGen != monitorGeneration || IsShuttingDown)
+                    return;
 
-                // 详细模式心跳：每 30 秒一条状态摘要，用于判断"卡住没有、卡在哪一步"
-                if (config.LogVerbose && !screenLocked && ++heartbeatTicks >= 30)
-                {
-                    heartbeatTicks = 0;
-                    int staleSeconds = monitor.GetSecondsSinceLastCheck();
-                    LogDebug("Monitor", $"Heartbeat: {DescribeMonitorState()}, last success check: {staleSeconds}s ago, checking: {isChecking}");
-                }
+                AdvanceMonitorAndHeartbeat(screenLocked: false, appRunning, phoneConnected);
             }
             catch (Exception ex)
             {
                 LogError("Monitor", $"MonitorTick exception: {Describe(ex)}");
-            }
-            finally
-            {
-                isChecking = false;
-                isTickRunning = false;
             }
         }
 

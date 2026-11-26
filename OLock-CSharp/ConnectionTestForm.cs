@@ -233,8 +233,13 @@ namespace OLock
             guideLabel.Text = Tr("test_drill_waiting");
         }
 
+        internal string StatusLabelTextForTest => statusLabel.Text;
+        internal string GuideLabelTextForTest => guideLabel.Text;
+
         // 每秒异步驱动一次监控内核并同步展示最新状态（托盘图标由 TickCoreAsync 内的 UpdateIcon 同步刷新）
-        private async void DrillTick()
+        private async void DrillTick() => await DrillTickAsync();
+
+        internal async Task DrillTickAsync()
         {
             if (!DrillActive || drillTickRunning)
                 return;
@@ -242,14 +247,23 @@ namespace OLock
             drillTickRunning = true;
             try
             {
+                // 前置拦截：若在两拍之间发生了 S3 休眠唤醒（StartWaitingForApp 将状态置为 IsWaitingForApp）或锁屏，
+                // 必须在 TickCoreAsync() 之前终止演练，避免 TickCoreAsync 把 IsWaitingForApp 推进成 IsWarmup 而漏判
+                if (monitor.IsWaitingForApp || monitor.IsWarmup || monitor.WasLocked)
+                {
+                    StopDisconnectTest(waitReconnect: false);
+                    ShowInterrupted();
+                    return;
+                }
+
                 await TickCoreAsync();
 
                 // 若本秒已触发模拟锁屏（OnDrillReported 已调用 StopDisconnectTest），不再覆盖完成态文案
                 if (!DrillActive || IsDisposed)
                     return;
 
-                // 进程退出 / 屏幕状态变化会让状态机回到等待态：测试到此为止
-                if (monitor.IsWaitingForApp || monitor.WasLocked)
+                // 进程退出 / 屏幕状态变化 / 途中休眠唤醒会让状态机偏离演练在线/离线态：测试到此为止
+                if (monitor.IsWaitingForApp || monitor.IsWarmup || monitor.WasLocked)
                 {
                     StopDisconnectTest(waitReconnect: false);
                     ShowInterrupted();
