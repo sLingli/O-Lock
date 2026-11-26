@@ -24,7 +24,7 @@ namespace OLock
         // ================== 配置项 ==================
         internal const string APP_NAME = "OLock";
         internal const string CONFIG_FILE_NAME = "olock.config.json";
-        internal static AppConfig config = AppConfig.CreateDefault();
+        internal static volatile AppConfig config = AppConfig.CreateDefault();
         // ============================================
 
         // 应用版本号 (来自 csproj 的 <Version>)，如 "1.2.0"；完整版本含提交哈希，见 Application.ProductVersion
@@ -55,7 +55,7 @@ namespace OLock
             if (DrillActive) return;
             DrillActive = true;
             monitorTimer?.Stop();
-            isChecking = false;
+            monitorGeneration++;
             lockExecutor = new DryRunLockExecutor(msg =>
             {
                 LogInfo("Drill", msg);
@@ -72,6 +72,7 @@ namespace OLock
         {
             if (!DrillActive) return;
             DrillActive = false;
+            monitorGeneration++;
             lockExecutor = realExecutor;
             if (!monitor.IsOnline)
             {
@@ -87,8 +88,11 @@ namespace OLock
 
         // 定时器 (替代后台线程)
         internal static System.Windows.Forms.Timer monitorTimer = null!;
-        internal static bool isChecking = false;    // 防止并发执行连接检查
+        internal static bool isChecking = false;    // 当前是否处于后台连接检测中（供心跳诊断）
         private static int heartbeatTicks = 0;      // 详细模式心跳计数
+        private static bool isTickRunning = false;  // 整轮 Tick 防重入标志
+        private static int monitorGeneration = 0;   // 模式切换代次，丢弃状态变化前的在途检查结果
+        private static SynchronizationContext? mainUiContext;
         private static Mutex? singleInstanceMutex;
         private static bool ownsSingleInstanceMutex;
         private static readonly CancellationTokenSource startupUpdateCts = new CancellationTokenSource();
@@ -186,6 +190,7 @@ namespace OLock
             // 监听二次启动信号：当托盘被 Win11 隐藏在溢出区时，再次双击 OLock.exe 即可直接唤起连接测试窗口
             var uiContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
             SynchronizationContext.SetSynchronizationContext(uiContext);
+            mainUiContext = uiContext;
             RegisteredWaitHandle waitHandle = ThreadPool.RegisterWaitForSingleObject(
                 showTestEvent,
                 (_, timedOut) =>
@@ -234,17 +239,21 @@ namespace OLock
             else if (e.Mode == PowerModes.Resume)
             {
                 LogInfo("Power", "System resumed (S3 Resume) -> resetting monitor");
-                StartWaitingForApp();
+                if (mainUiContext != null && SynchronizationContext.Current != mainUiContext)
+                    mainUiContext.Post(_ => StartWaitingForApp(), null);
+                else
+                    StartWaitingForApp();
             }
         }
 
         static void StartWaitingForApp()
         {
+            monitorGeneration++;
             monitor.ResetToWaiting();
             UpdateIcon();
 
-            // 确保定时器在运行
-            if (monitorTimer != null && !monitorTimer.Enabled)
+            // 演练期间由测试窗口的 drillTimer 独占驱动（测试窗口下一拍检测到 WaitingForApp 会自行结束演练并恢复 monitorTimer）
+            if (!DrillActive && monitorTimer != null && !monitorTimer.Enabled)
                 monitorTimer.Start();
         }
 
@@ -255,38 +264,37 @@ namespace OLock
 
         // TickCoreAsync 是监控内核：收集事实 (屏幕锁定/进程存活/手机连接) → 交给状态机决策 → 经执行器执行动作 → 刷新图标。
         // 返回 Task 供测试窗口 await，保证每次 Tick 完整走完后再读取最新状态。
-        // 锁屏/睡眠的真实动作由 lockExecutor 决定：演练期间被替换为 DryRunLockExecutor，决策链照走但不动真格。
+        // 整轮通过 isTickRunning 防重入，并通过 monitorGeneration 丢弃模式切换前的在途结果。
         internal static async Task TickCoreAsync()
         {
+            if (isTickRunning)
+                return;
+
+            isTickRunning = true;
             try
             {
+                int tickGen = monitorGeneration;
                 bool screenLocked = IsScreenLocked();
 
                 bool appRunning = false;
                 bool? phoneConnected = null;
 
-                if (screenLocked)
+                if (!screenLocked)
                 {
-                    // 锁屏时强制重置防重入标志，避免解锁后卡死
-                    isChecking = false;
-                }
-                else
-                {
-                    appRunning = await Task.Run(IsAppRunning);
-
-                    // 等待阶段 (灰色) 只关心进程是否启动，不做连接检查
-                    if (!isChecking && !monitor.IsWaitingForApp)
+                    bool needConnectionCheck = !monitor.IsWaitingForApp;
+                    isChecking = needConnectionCheck;
+                    try
                     {
-                        isChecking = true;
-                        try
-                        {
-                            phoneConnected = await CheckPhoneConnectionAsync();
-                        }
-                        finally
-                        {
-                            isChecking = false;
-                        }
+                        (appRunning, phoneConnected) = await CheckMonitorFactsAsync(needConnectionCheck);
                     }
+                    finally
+                    {
+                        isChecking = false;
+                    }
+
+                    // 后台检测期间若发生了演练启停、休眠唤醒或程序退出，丢弃已过时的在途结果
+                    if (tickGen != monitorGeneration)
+                        return;
                 }
 
                 var action = monitor.Tick(screenLocked, appRunning, phoneConnected);
@@ -303,15 +311,18 @@ namespace OLock
                 if (config.LogVerbose && !screenLocked && ++heartbeatTicks >= 30)
                 {
                     heartbeatTicks = 0;
-                    int staleSeconds = monitor.LastCheckSuccessTime == DateTime.MinValue
-                        ? -1
-                        : (int)(DateTime.Now - monitor.LastCheckSuccessTime).TotalSeconds;
+                    int staleSeconds = monitor.GetSecondsSinceLastCheck();
                     LogDebug("Monitor", $"Heartbeat: {DescribeMonitorState()}, last success check: {staleSeconds}s ago, checking: {isChecking}");
                 }
             }
             catch (Exception ex)
             {
                 LogError("Monitor", $"MonitorTick exception: {Describe(ex)}");
+            }
+            finally
+            {
+                isChecking = false;
+                isTickRunning = false;
             }
         }
 
@@ -367,6 +378,7 @@ namespace OLock
 
         internal static void ShutdownForExit()
         {
+            monitorGeneration++;
             CancelStartupUpdateCheck();
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             monitorTimer?.Stop();

@@ -15,15 +15,17 @@ namespace OLock
     // 按返回的动作执行锁屏/睡眠，并负责刷新托盘图标。
     internal class MonitorStateMachine
     {
-        private readonly AppConfig config;
+        private AppConfig config;
         private readonly Action<string> info;
         private readonly Action<string> error;
+        private readonly Func<long> clockMs;
 
-        public MonitorStateMachine(AppConfig config, Action<string> info, Action<string> error)
+        public MonitorStateMachine(AppConfig config, Action<string> info, Action<string> error, Func<long>? clockMs = null)
         {
             this.config = config;
             this.info = info ?? (_ => { });
             this.error = error ?? (_ => { });
+            this.clockMs = clockMs ?? (() => Environment.TickCount64);
 
             // 初始为灰色状态，不写日志（由外壳在启动时显式调用 ResetToWaiting）
             IsWaitingForApp = true;
@@ -31,6 +33,12 @@ namespace OLock
             IsOnline = false;
             OfflineSeconds = 0;
             LastCheckSuccessTime = DateTime.MinValue;
+            LastCheckSuccessTickMs = null;
+        }
+
+        internal void UpdateConfig(AppConfig newConfig)
+        {
+            config = newConfig ?? throw new ArgumentNullException(nameof(newConfig));
         }
 
         // 状态快照（可读写，便于测试构造场景）
@@ -42,6 +50,15 @@ namespace OLock
         public int OfflineSeconds { get; set; }
         public bool WasLocked { get; set; }
         public DateTime LastCheckSuccessTime { get; set; }
+        public long? LastCheckSuccessTickMs { get; set; }
+
+        internal int GetSecondsSinceLastCheck()
+        {
+            if (!LastCheckSuccessTickMs.HasValue)
+                return -1;
+            long elapsedMs = Math.Max(0L, clockMs() - LastCheckSuccessTickMs.Value);
+            return (int)(elapsedMs / 1000L);
+        }
 
         // 回到灰色状态（等待应用启动）：解锁、S3 唤醒、进程退出等场景
         public void ResetToWaiting()
@@ -52,6 +69,7 @@ namespace OLock
             WaitReconnectAfterDrill = false;
             OfflineSeconds = 0;
             LastCheckSuccessTime = DateTime.MinValue;
+            LastCheckSuccessTickMs = null;
             info("State: Waiting for app to start");
         }
 
@@ -79,6 +97,7 @@ namespace OLock
             WarmupRemaining = 0;
             OfflineSeconds = 0;
             LastCheckSuccessTime = DateTime.Now;
+            LastCheckSuccessTickMs = clockMs();
             info("State: Drill started, aligned to online monitoring state");
         }
 
@@ -93,6 +112,7 @@ namespace OLock
             WarmupRemaining = 0;
             OfflineSeconds = 0;
             LastCheckSuccessTime = DateTime.MinValue;
+            LastCheckSuccessTickMs = null;
             info("State: Drill ended, waiting for phone reconnect before resuming lock guard");
         }
 
@@ -101,14 +121,6 @@ namespace OLock
         // 返回本秒需要外壳执行的动作
         public MonitorAction Tick(bool screenLocked, bool appRunning, bool? phoneConnected)
         {
-            // 0. isOnline 过期保护：太久没有成功检查结果，强制标记离线
-            if (IsOnline && LastCheckSuccessTime != DateTime.MinValue &&
-                (DateTime.Now - LastCheckSuccessTime).TotalSeconds > config.OfflineSeconds * 3)
-            {
-                error($"Check result expired ({(int)(DateTime.Now - LastCheckSuccessTime).TotalSeconds}s without result), forcing offline");
-                IsOnline = false;
-            }
-
             // 1. 解锁瞬间：重置回灰色状态，本秒不再做其他事
             if (WasLocked && !screenLocked)
             {
@@ -126,13 +138,27 @@ namespace OLock
                 info("Screen locked");
             WasLocked = screenLocked;
 
-            // 2. 锁屏期间暂停监控
+            // 2. 锁屏期间暂停监控（冻结状态，不触发过期离线判定）
             if (screenLocked)
                 return MonitorAction.None;
 
+            // 2.5 isOnline 过期保护（仅在未锁屏且本秒无有效检查结果时，基于单调时钟判定）
+            if (!phoneConnected.HasValue && IsOnline && LastCheckSuccessTickMs.HasValue)
+            {
+                long elapsedSeconds = (clockMs() - LastCheckSuccessTickMs.Value) / 1000L;
+                if (elapsedSeconds > config.OfflineSeconds * 3L)
+                {
+                    error($"Check result expired ({elapsedSeconds}s without result), forcing offline");
+                    IsOnline = false;
+                }
+            }
+
             // 3. 非空检查结果视为有效检查，盖时间戳（检查完成即更新，与结果无关）
             if (phoneConnected.HasValue)
+            {
                 LastCheckSuccessTime = DateTime.Now;
+                LastCheckSuccessTickMs = clockMs();
+            }
 
             // 3.5 演练结束后的等待重连保护：手机未重连前保持静默，不触发缓冲期超时或离线锁屏
             if (WaitReconnectAfterDrill)

@@ -8,12 +8,12 @@ namespace OLock.Tests
         private readonly List<string> _logs = new();
         private readonly List<string> _errors = new();
 
-        private MonitorStateMachine Create(int offlineSeconds = 9, int warmupSeconds = 60)
+        private MonitorStateMachine Create(int offlineSeconds = 9, int warmupSeconds = 60, Func<long>? clockMs = null)
         {
             var config = AppConfig.CreateDefault();
             config.OfflineSeconds = offlineSeconds;
             config.WarmupSeconds = warmupSeconds;
-            return new MonitorStateMachine(config, _logs.Add, _errors.Add);
+            return new MonitorStateMachine(config, _logs.Add, _errors.Add, clockMs);
         }
 
         [Fact]
@@ -186,13 +186,39 @@ namespace OLock.Tests
         [Fact]
         public void StaleOnline_IsForcedOffline()
         {
-            var m = Create(offlineSeconds: 9);
+            long nowMs = 10_000;
+            var m = Create(offlineSeconds: 9, clockMs: () => nowMs);
             m.Tick(false, true, null);
             m.Tick(false, true, true);
-            m.LastCheckSuccessTime = DateTime.Now.AddSeconds(-28); // 超过 9*3=27 秒无检查结果
+            nowMs += 28_000; // 超过 9*3=27 秒无检查结果（单调时钟）
             m.Tick(false, true, phoneConnected: null);
             Assert.False(m.IsOnline);
             Assert.Contains(_errors, e => e.Contains("expired"));
+        }
+
+        [Fact]
+        public void Locked_StaleCheck_DoesNotTriggerExpiredErrorOrMutateIsOnline()
+        {
+            long nowMs = 10_000;
+            var m = Create(offlineSeconds: 9, clockMs: () => nowMs);
+            m.Tick(false, true, null);
+            m.Tick(false, true, true);
+            Assert.True(m.IsOnline);
+
+            // 锁屏后即使经过远超 OfflineSeconds*3 的时间，也不应误报过期或篡改 IsOnline
+            m.Tick(screenLocked: true, appRunning: false, phoneConnected: null);
+            nowMs += 120_000;
+            m.Tick(screenLocked: true, appRunning: false, phoneConnected: null);
+
+            Assert.True(m.IsOnline);
+            Assert.Empty(_errors);
+
+            // 解锁后正常复位回等待态
+            m.Tick(screenLocked: false, appRunning: false, phoneConnected: null);
+            Assert.True(m.IsWaitingForApp);
+            Assert.False(m.IsOnline);
+            Assert.Null(m.LastCheckSuccessTickMs);
+            Assert.Equal(-1, m.GetSecondsSinceLastCheck());
         }
 
         [Fact]
