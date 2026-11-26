@@ -667,11 +667,40 @@ namespace OLock
             // 回到调用方（UI）线程执行退出与重启，保证 Mutex 释放与 WinForms 生命周期线程亲和
             if (swappedInPlace)
             {
-                RestartIntoUpdatedExecutable(currentExePath);
+                try
+                {
+                    RestartIntoUpdatedExecutable(currentExePath);
+                }
+                catch
+                {
+                    TryRollbackExecutable(currentExePath, oldExePath);
+                    throw;
+                }
                 return;
             }
 
             ExitForExternalUpdater();
+        }
+
+        internal static void TryRollbackExecutable(string targetExePath, string backupOldPath)
+        {
+            try
+            {
+                if (!File.Exists(backupOldPath))
+                    return;
+
+                string failedPath = targetExePath + ".failed";
+                TryDeleteFile(failedPath);
+                if (File.Exists(targetExePath))
+                    File.Move(targetExePath, failedPath);
+                File.Move(backupOldPath, targetExePath);
+                TryDeleteFile(failedPath);
+                LogInfo("Update", $"Rolled back original executable to {targetExePath} after restart failure");
+            }
+            catch (Exception ex)
+            {
+                LogError("Update", $"Failed to rollback executable after restart failure: {Describe(ex)}");
+            }
         }
 
         internal static ProcessStartInfo CreateFallbackUpdaterStartInfo(
