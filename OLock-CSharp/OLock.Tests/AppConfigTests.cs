@@ -1,3 +1,5 @@
+using System;
+using Microsoft.Win32;
 using OLock;
 
 namespace OLock.Tests
@@ -142,6 +144,103 @@ namespace OLock.Tests
             c.AppProcessName = "  O+Connect  ";
             c.Normalize();
             Assert.Equal("O+Connect", c.AppProcessName);
+        }
+
+        [Fact]
+        public void Storage_SaveAndLoad_RoundTripsAllFields()
+        {
+            string testKey = $@"Software\OLock_Test_{Guid.NewGuid():N}";
+            var prevConfig = Program.config;
+            bool prevSleep = Program.autoSleep;
+            bool prevScreenOff = Program.autoScreenOff;
+            try
+            {
+                Program.config = new AppConfig
+                {
+                    AppProcessName = "CustomConnect",
+                    OfflineSeconds = 15,
+                    WarmupSeconds = 90,
+                    MinWarmupSeconds = 20,
+                    MaxWarmupSeconds = 300,
+                    AllowedRemoteIpPrefixes = new[] { "192.168.50.", "fe80:" },
+                    IgnoredRemoteIpPrefixes = new[] { "192.168.50.1" },
+                    SleepCommand = "custom-sleep.exe",
+                    SleepArguments = "--fast",
+                    LogRetentionDays = 14,
+                    LogVerbose = true,
+                    CheckUpdatesOnStartup = false
+                };
+                Program.autoSleep = true;
+                Program.autoScreenOff = false;
+
+                AppConfigStorage.SaveSettings(testKey);
+
+                // 重置为默认值再读回
+                Program.config = AppConfig.CreateDefault();
+                Program.autoSleep = false;
+                Program.autoScreenOff = true;
+
+                AppConfigStorage.LoadSettings(testKey);
+                Program.config.Normalize();
+
+                Assert.Equal("CustomConnect", Program.config.AppProcessName);
+                Assert.Equal(15, Program.config.OfflineSeconds);
+                Assert.Equal(90, Program.config.WarmupSeconds);
+                Assert.Equal(20, Program.config.MinWarmupSeconds);
+                Assert.Equal(300, Program.config.MaxWarmupSeconds);
+                Assert.Equal(new[] { "192.168.50.", "fe80:" }, Program.config.AllowedRemoteIpPrefixes);
+                Assert.Equal(new[] { "192.168.50.1" }, Program.config.IgnoredRemoteIpPrefixes);
+                Assert.Equal("custom-sleep.exe", Program.config.SleepCommand);
+                Assert.Equal("--fast", Program.config.SleepArguments);
+                Assert.Equal(14, Program.config.LogRetentionDays);
+                Assert.True(Program.config.LogVerbose);
+                Assert.False(Program.config.CheckUpdatesOnStartup);
+                Assert.True(Program.autoSleep);
+                Assert.False(Program.autoScreenOff);
+            }
+            finally
+            {
+                Program.config = prevConfig;
+                Program.autoSleep = prevSleep;
+                Program.autoScreenOff = prevScreenOff;
+                Registry.CurrentUser.DeleteSubKeyTree(testKey, throwOnMissingSubKey: false);
+            }
+        }
+
+        [Fact]
+        public void Storage_LoadSettings_MigratesLegacyOfflineThresholdAndIgnoresSingleCorruptKey()
+        {
+            string testKey = $@"Software\OLock_Test_{Guid.NewGuid():N}";
+            var prevConfig = Program.config;
+            bool prevSleep = Program.autoSleep;
+            bool prevScreenOff = Program.autoScreenOff;
+            try
+            {
+                using (var key = Registry.CurrentUser.CreateSubKey(testKey))
+                {
+                    key.SetValue("OfflineThreshold", 5);
+                    key.SetValue("CheckIntervalSeconds", 4);
+                    key.SetValue("WarmupSeconds", "corrupted-int");   // 单项损坏不应中断其余项读取
+                    key.SetValue("LogRetentionDays", 21);
+                    key.SetValue("CheckUpdatesOnStartup", "not-a-bool");
+                }
+
+                Program.config = AppConfig.CreateDefault();
+                AppConfigStorage.LoadSettings(testKey);
+                Program.config.Normalize();
+
+                Assert.Equal(20, Program.config.OfflineSeconds);     // 5 * 4 迁移生效
+                Assert.Equal(60, Program.config.WarmupSeconds);      // 损坏项回退默认
+                Assert.Equal(21, Program.config.LogRetentionDays);   // 后续有效项正常读取
+                Assert.True(Program.config.CheckUpdatesOnStartup);   // 损坏布尔保持默认
+            }
+            finally
+            {
+                Program.config = prevConfig;
+                Program.autoSleep = prevSleep;
+                Program.autoScreenOff = prevScreenOff;
+                Registry.CurrentUser.DeleteSubKeyTree(testKey, throwOnMissingSubKey: false);
+            }
         }
 
     }

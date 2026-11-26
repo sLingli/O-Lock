@@ -113,11 +113,13 @@ namespace OLock
     // 否则读取过程中的异常会把钳制一起跳过。
     internal static class AppConfigStorage
     {
-        internal static void LoadSettings()
+        internal const string DefaultRegistrySubKey = @"Software\OLock";
+
+        internal static void LoadSettings(string subKeyPath = DefaultRegistrySubKey)
         {
             try
             {
-                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\OLock", false))
+                using (var key = Registry.CurrentUser.OpenSubKey(subKeyPath, false))
                 {
                     if (key == null)
                         return;
@@ -232,31 +234,32 @@ namespace OLock
             }
         }
 
-        internal static void SaveSettings()
+        internal static void SaveSettings(string subKeyPath = DefaultRegistrySubKey)
         {
             try
             {
-                using (var key = Registry.CurrentUser.CreateSubKey(@"Software\OLock"))
+                var cfg = config;
+                using (var key = Registry.CurrentUser.CreateSubKey(subKeyPath))
                 {
                     if (key != null)
                     {
                         // 配置项
-                        key.SetValue("AppProcessName", config.AppProcessName);
-                        key.SetValue("OfflineSeconds", config.OfflineSeconds);
-                        key.SetValue("WarmupSeconds", config.WarmupSeconds);
-                        key.SetValue("MinWarmupSeconds", config.MinWarmupSeconds);
-                        key.SetValue("MaxWarmupSeconds", config.MaxWarmupSeconds);
-                        key.SetValue("AllowedRemoteIpPrefixes", string.Join(",", config.AllowedRemoteIpPrefixes));
-                        key.SetValue("IgnoredRemoteIpPrefixes", string.Join(",", config.IgnoredRemoteIpPrefixes));
-                        key.SetValue("SleepCommand", config.SleepCommand);
-                        key.SetValue("SleepArguments", config.SleepArguments);
-                        key.SetValue("LogRetentionDays", config.LogRetentionDays);
+                        key.SetValue("AppProcessName", cfg.AppProcessName);
+                        key.SetValue("OfflineSeconds", cfg.OfflineSeconds);
+                        key.SetValue("WarmupSeconds", cfg.WarmupSeconds);
+                        key.SetValue("MinWarmupSeconds", cfg.MinWarmupSeconds);
+                        key.SetValue("MaxWarmupSeconds", cfg.MaxWarmupSeconds);
+                        key.SetValue("AllowedRemoteIpPrefixes", string.Join(",", cfg.AllowedRemoteIpPrefixes));
+                        key.SetValue("IgnoredRemoteIpPrefixes", string.Join(",", cfg.IgnoredRemoteIpPrefixes));
+                        key.SetValue("SleepCommand", cfg.SleepCommand);
+                        key.SetValue("SleepArguments", cfg.SleepArguments);
+                        key.SetValue("LogRetentionDays", cfg.LogRetentionDays);
 
                         // 用户偏好
                         key.SetValue("AutoSleep", autoSleep);
                         key.SetValue("AutoScreenOff", autoScreenOff);
-                        key.SetValue("LogVerbose", config.LogVerbose);
-                        key.SetValue("CheckUpdatesOnStartup", config.CheckUpdatesOnStartup);
+                        key.SetValue("LogVerbose", cfg.LogVerbose);
+                        key.SetValue("CheckUpdatesOnStartup", cfg.CheckUpdatesOnStartup);
                     }
                 }
             }
