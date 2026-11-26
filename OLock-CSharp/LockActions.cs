@@ -25,30 +25,65 @@ namespace OLock
     // 使用环境执行器：真实调用 user32 / rundll32
     internal sealed class RealLockExecutor : ILockExecutor
     {
-        [DllImport("user32.dll")]
-        private static extern IntPtr SendMessage(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        private static extern IntPtr SendMessageTimeout(
+            IntPtr hWnd,
+            uint msg,
+            IntPtr wParam,
+            IntPtr lParam,
+            uint fuFlags,
+            uint uTimeout,
+            out IntPtr lpdwResult);
 
         private const int HWND_BROADCAST = 0xFFFF;
-        private const int WM_SYSCOMMAND = 0x0112;
+        private const uint WM_SYSCOMMAND = 0x0112;
         private const int SC_MONITORPOWER = 0xF170;
         private const int MONITOR_OFF = 2;
+        private const uint SMTO_ABORTIFHUNG = 0x0002;
+        private const uint SCREEN_OFF_BROADCAST_TIMEOUT_MS = 2000;
 
-        [DllImport("user32.dll")]
+        [DllImport("user32.dll", SetLastError = true)]
         private static extern bool LockWorkStation();
 
         public void ExecuteLock()
         {
             LogInfo("Action", "Executing screen lock");
-            LockWorkStation();
+            if (!LockWorkStation())
+            {
+                int err = Marshal.GetLastWin32Error();
+                LogError("Action", $"LockWorkStation failed (Win32 error {err})");
+            }
 
             if (autoScreenOff)
             {
-                // 在后台线程延迟后关屏，避免阻塞 UI
+                // 在后台线程延迟后关屏，使用 SendMessageTimeout(SMTO_ABORTIFHUNG) 防止任意无响应窗口导致线程永久挂起
                 Task.Run(() =>
                 {
-                    Thread.Sleep(500);
-                    SendMessage((IntPtr)HWND_BROADCAST, WM_SYSCOMMAND, (IntPtr)SC_MONITORPOWER, (IntPtr)MONITOR_OFF);
-                    LogInfo("Action", "Turning off screen");
+                    try
+                    {
+                        Thread.Sleep(500);
+                        IntPtr result = SendMessageTimeout(
+                            (IntPtr)HWND_BROADCAST,
+                            WM_SYSCOMMAND,
+                            (IntPtr)SC_MONITORPOWER,
+                            (IntPtr)MONITOR_OFF,
+                            SMTO_ABORTIFHUNG,
+                            SCREEN_OFF_BROADCAST_TIMEOUT_MS,
+                            out _);
+                        if (result == IntPtr.Zero)
+                        {
+                            int err = Marshal.GetLastWin32Error();
+                            LogError("Action", $"Screen-off broadcast timed out or failed (Win32 error {err})");
+                        }
+                        else
+                        {
+                            LogInfo("Action", "Turning off screen");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogError("Action", $"Screen-off command failed: {Describe(ex)}");
+                    }
                 });
             }
         }
@@ -56,6 +91,7 @@ namespace OLock
         public void ExecuteSleep()
         {
             LogInfo("Action", "Executing sleep command");
+            var cfg = config;
             // 在后台线程执行，避免阻塞 UI
             Task.Run(() =>
             {
@@ -63,8 +99,8 @@ namespace OLock
                 {
                     using (var proc = Process.Start(new ProcessStartInfo
                     {
-                        FileName = config.SleepCommand,
-                        Arguments = config.SleepArguments,
+                        FileName = cfg.SleepCommand,
+                        Arguments = cfg.SleepArguments,
                         CreateNoWindow = true,
                         WindowStyle = ProcessWindowStyle.Hidden,
                         UseShellExecute = false
@@ -92,8 +128,9 @@ namespace OLock
         public DryRunLockExecutor(Action<string> report, string? sleepCommand = null, string? sleepArguments = null)
         {
             this.report = report ?? (_ => { });
-            this.sleepCommand = sleepCommand ?? config.SleepCommand;
-            this.sleepArguments = sleepArguments ?? config.SleepArguments;
+            var cfg = config;
+            this.sleepCommand = sleepCommand ?? cfg.SleepCommand;
+            this.sleepArguments = sleepArguments ?? cfg.SleepArguments;
         }
 
         public void ExecuteLock()
