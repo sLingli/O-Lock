@@ -58,12 +58,17 @@ namespace OLock
         private UpdateCheckResult? currentResult;
         private CancellationTokenSource? checkCts;
         private CancellationTokenSource? downloadCts;
+        private readonly SynchronizationContext? uiContext;
+        private readonly object applyGate = new object();
         private bool isCheckingUpdate;
         private bool isDownloading;
+        private bool isApplyingUpdate;
+        private bool cancelRequested;
 
         public UpdateWindow(UpdateCheckResult? prefetched)
         {
             currentResult = prefetched;
+            uiContext = SynchronizationContext.Current;
 
             Text = $"{Tr("update_title")} - {APP_NAME} {AppVersion}";
             ClientSize = new Size(520, 362);
@@ -149,12 +154,23 @@ namespace OLock
                 else
                     await RunCheckAsync();
             };
+        }
 
-            FormClosing += (_, _) =>
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            lock (applyGate)
             {
-                checkCts?.Cancel();
-                downloadCts?.Cancel();
-            };
+                // 进入不可逆替换重启阶段后拦截用户手动关闭 ([X] / Alt+F4)，允许 Application.Exit() 正常收尾
+                if (isApplyingUpdate && e.CloseReason == CloseReason.UserClosing)
+                {
+                    e.Cancel = true;
+                    return;
+                }
+                cancelRequested = true;
+            }
+            try { checkCts?.Cancel(); } catch { }
+            try { downloadCts?.Cancel(); } catch { }
+            base.OnFormClosing(e);
         }
 
         internal void ApplyPrefetchedIfIdle(UpdateCheckResult result)
@@ -169,7 +185,13 @@ namespace OLock
         {
             if (isDownloading)
             {
-                downloadCts?.Cancel();
+                lock (applyGate)
+                {
+                    if (isApplyingUpdate)
+                        return;
+                    cancelRequested = true;
+                }
+                try { downloadCts?.Cancel(); } catch { }
                 recheckOrCancelButton.Enabled = false;
                 return;
             }
@@ -259,6 +281,11 @@ namespace OLock
                 return;
 
             isDownloading = true;
+            lock (applyGate)
+            {
+                isApplyingUpdate = false;
+                cancelRequested = false;
+            }
             downloadCts?.Dispose();
             downloadCts = new CancellationTokenSource();
 
@@ -278,12 +305,45 @@ namespace OLock
 
             var progress = new Progress<UpdateDownloadProgress>(OnDownloadProgress);
 
+            bool TryEnterApplyPhase()
+            {
+                lock (applyGate)
+                {
+                    if (cancelRequested || downloadCts == null || downloadCts.IsCancellationRequested)
+                        return false;
+                    isApplyingUpdate = true;
+                }
+
+                void LockUiForApply()
+                {
+                    if (IsDisposed) return;
+                    recheckOrCancelButton.Enabled = false;
+                    openPageButton.Enabled = false;
+                    closeButton.Enabled = false;
+                    progressBar.Style = ProgressBarStyle.Marquee;
+                    statusLabel.ForeColor = SystemColors.ControlText;
+                    statusLabel.Text = Tr("update_applying");
+                }
+
+                if (uiContext != null)
+                    uiContext.Post(_ => LockUiForApply(), null);
+                else if (IsHandleCreated)
+                    try { BeginInvoke((Action)LockUiForApply); } catch { }
+
+                return true;
+            }
+
             try
             {
-                await UpdateService.DownloadAndApplyUpdateAsync(currentResult, progress, downloadCts.Token);
+                await UpdateService.DownloadAndApplyUpdateAsync(currentResult, progress, downloadCts.Token, TryEnterApplyPhase);
             }
             catch (OperationCanceledException)
             {
+                lock (applyGate)
+                {
+                    isApplyingUpdate = false;
+                    cancelRequested = false;
+                }
                 if (!IsDisposed)
                 {
                     statusLabel.ForeColor = SystemColors.ControlText;
@@ -293,6 +353,11 @@ namespace OLock
             }
             catch (Exception ex)
             {
+                lock (applyGate)
+                {
+                    isApplyingUpdate = false;
+                    cancelRequested = false;
+                }
                 LogError("Update", $"Failed to download/apply update: {Describe(ex)}");
                 if (!IsDisposed)
                 {
@@ -346,6 +411,7 @@ namespace OLock
             progressLabel.Visible = false;
             recheckOrCancelButton.Text = Tr("update_btn_recheck");
             recheckOrCancelButton.Enabled = true;
+            openPageButton.Enabled = true;
             closeButton.Enabled = true;
             installButton.Enabled = canRetryInstall && !string.IsNullOrWhiteSpace(currentResult?.DownloadUrl);
         }

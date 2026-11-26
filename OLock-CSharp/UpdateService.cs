@@ -315,7 +315,7 @@ namespace OLock
 
             try
             {
-                using var response = await apiHttpClient.GetAsync(LatestReleaseApiUrl, HttpCompletionOption.ResponseContentRead, timeoutCts.Token);
+                using var response = await apiHttpClient.GetAsync(LatestReleaseApiUrl, HttpCompletionOption.ResponseContentRead, timeoutCts.Token).ConfigureAwait(false);
                 if (!response.IsSuccessStatusCode)
                 {
                     string err = $"HTTP {(int)response.StatusCode} ({response.ReasonPhrase})";
@@ -329,7 +329,7 @@ namespace OLock
                     };
                 }
 
-                string json = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+                string json = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
                 var result = ParseLatestReleaseJson(json, AppVersion, variant);
                 if (result.Status == UpdateCheckStatus.Failed)
                     LogError("Update", $"Update check parse failed: {result.ErrorMessage}");
@@ -452,8 +452,10 @@ namespace OLock
             TimeSpan idleReadTimeout,
             TimeSpan overallTimeout,
             IProgress<UpdateDownloadProgress>? progress = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            Func<long>? clockMs = null)
         {
+            var getNowMs = clockMs ?? (() => Environment.TickCount64);
             using var overallCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             overallCts.CancelAfter(overallTimeout);
 
@@ -461,6 +463,7 @@ namespace OLock
 
             byte[] buffer = new byte[65536];
             long received = 0;
+            bool hasReported = false;
             long lastReportTick = 0;
             long lastReportedBytes = -1;
             int lastReportedPct = -1;
@@ -470,25 +473,26 @@ namespace OLock
                 while (true)
                 {
                     idleCts.CancelAfter(idleReadTimeout);
-                    int read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), idleCts.Token);
+                    int read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), idleCts.Token).ConfigureAwait(false);
                     if (read <= 0)
                         break;
 
                     idleCts.CancelAfter(idleReadTimeout);
-                    await destination.WriteAsync(buffer.AsMemory(0, read), idleCts.Token);
+                    await destination.WriteAsync(buffer.AsMemory(0, read), idleCts.Token).ConfigureAwait(false);
                     received += read;
 
                     if (progress != null)
                     {
                         var current = new UpdateDownloadProgress(received, totalBytes);
-                        long nowTick = Environment.TickCount64;
+                        long nowTick = getNowMs();
                         bool isFinal = totalBytes > 0 && received >= totalBytes;
                         bool shouldReport = isFinal
-                            || lastReportTick == 0
+                            || !hasReported
                             || (nowTick - lastReportTick >= 100 && (totalBytes <= 0 || current.Percentage != lastReportedPct || nowTick - lastReportTick >= 250));
                         if (shouldReport)
                         {
                             progress.Report(current);
+                            hasReported = true;
                             lastReportTick = nowTick;
                             lastReportedBytes = received;
                             lastReportedPct = current.Percentage;
@@ -511,11 +515,13 @@ namespace OLock
                 throw new IOException($"Incomplete download ({received} / {totalBytes} bytes).");
         }
 
-        // 流式下载对应压缩包、解压校验，并在原路径原子替换后重启新实例
+        // 流式下载对应压缩包、解压校验，并在原路径原子替换后切回 UI 线程重启新实例
+        // 下载、解压与磁盘替换均在后台线程 (Task.Run + ConfigureAwait(false)) 执行，绝不阻塞 UI 消息泵
         internal static async Task DownloadAndApplyUpdateAsync(
             UpdateCheckResult release,
             IProgress<UpdateDownloadProgress>? progress = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            Func<bool>? tryEnterApplyPhase = null)
         {
             if (string.IsNullOrWhiteSpace(release.DownloadUrl) ||
                 !release.DownloadUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
@@ -530,122 +536,142 @@ namespace OLock
             string exeDir = Path.GetDirectoryName(currentExePath)
                 ?? throw new InvalidOperationException("Cannot determine executable directory.");
 
-            // 下载前先验证目录可写，避免无权限目录下白下载几十 MB
-            EnsureDirectoryWritable(exeDir);
-
-            string stagingDir = Path.Combine(exeDir, $".olock_update_{Guid.NewGuid():N}");
-            Directory.CreateDirectory(stagingDir);
-
-            try
+            // 下载、解压与替换全流程脱离 UI 线程，避免大包解压阻塞界面或拖拽窗口导致误超时
+            (bool swappedInPlace, string oldExePath) = await Task.Run(async () =>
             {
-                string zipPath = Path.Combine(stagingDir, release.AssetName ?? "update.zip");
-                LogInfo("Update", $"Downloading update from {release.DownloadUrl} to {zipPath}");
+                // 下载前先验证目录可写，避免无权限目录下白下载几十 MB
+                EnsureDirectoryWritable(exeDir);
 
-                using var headerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                headerCts.CancelAfter(DownloadIdleReadTimeout);
+                string stagingDir = Path.Combine(exeDir, $".olock_update_{Guid.NewGuid():N}");
+                Directory.CreateDirectory(stagingDir);
 
-                HttpResponseMessage response;
                 try
                 {
-                    response = await downloadHttpClient.GetAsync(release.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, headerCts.Token);
-                }
-                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-                {
-                    throw new TimeoutException($"Timed out waiting for download server response ({(int)DownloadIdleReadTimeout.TotalSeconds}s).");
-                }
+                    string zipPath = Path.Combine(stagingDir, release.AssetName ?? "update.zip");
+                    LogInfo("Update", $"Downloading update from {release.DownloadUrl} to {zipPath}");
 
-                using (response)
-                {
-                    response.EnsureSuccessStatusCode();
-                    long totalBytes = response.Content.Headers.ContentLength ?? release.AssetSize;
+                    using var headerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    headerCts.CancelAfter(DownloadIdleReadTimeout);
 
-                    Stream netStream;
+                    HttpResponseMessage response;
                     try
                     {
-                        netStream = await response.Content.ReadAsStreamAsync(headerCts.Token);
+                        response = await downloadHttpClient.GetAsync(release.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, headerCts.Token).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                     {
-                        throw new TimeoutException($"Timed out opening download stream ({(int)DownloadIdleReadTimeout.TotalSeconds}s).");
+                        throw new TimeoutException($"Timed out waiting for download server response ({(int)DownloadIdleReadTimeout.TotalSeconds}s).");
                     }
 
-                    await using (netStream)
-                    await using (var fileStream = new FileStream(zipPath, FileMode.Create, FileAccess.Write, FileShare.None, 65536, useAsync: true))
+                    using (response)
                     {
-                        await CopyStreamWithTimeoutsAsync(
-                            netStream,
-                            fileStream,
-                            totalBytes,
-                            DownloadIdleReadTimeout,
-                            DownloadOverallTimeout,
-                            progress,
-                            cancellationToken);
+                        response.EnsureSuccessStatusCode();
+                        long totalBytes = response.Content.Headers.ContentLength ?? release.AssetSize;
+
+                        Stream netStream;
+                        try
+                        {
+                            netStream = await response.Content.ReadAsStreamAsync(headerCts.Token).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                        {
+                            throw new TimeoutException($"Timed out opening download stream ({(int)DownloadIdleReadTimeout.TotalSeconds}s).");
+                        }
+
+                        await using (netStream)
+                        await using (var fileStream = new FileStream(zipPath, FileMode.Create, FileAccess.Write, FileShare.None, 65536, useAsync: true))
+                        {
+                            await CopyStreamWithTimeoutsAsync(
+                                netStream,
+                                fileStream,
+                                totalBytes,
+                                DownloadIdleReadTimeout,
+                                DownloadOverallTimeout,
+                                progress,
+                                cancellationToken).ConfigureAwait(false);
+                        }
                     }
-                }
 
-                string extractDir = Path.Combine(stagingDir, "extracted");
-                ZipFile.ExtractToDirectory(zipPath, extractDir, overwriteFiles: true);
+                    // 解压前再次检查取消，避免下载刚完成时用户已关窗/取消仍继续操作磁盘
+                    cancellationToken.ThrowIfCancellationRequested();
 
-                string targetFileName = Path.GetFileName(currentExePath);
-                string[] candidates = Directory.GetFiles(extractDir, "*.exe", SearchOption.AllDirectories);
-                string? newExePath = candidates.FirstOrDefault(p => string.Equals(Path.GetFileName(p), targetFileName, StringComparison.OrdinalIgnoreCase))
-                    ?? candidates.FirstOrDefault(p => string.Equals(Path.GetFileName(p), "OLock.exe", StringComparison.OrdinalIgnoreCase))
-                    ?? candidates.FirstOrDefault();
+                    string extractDir = Path.Combine(stagingDir, "extracted");
+                    ZipFile.ExtractToDirectory(zipPath, extractDir, overwriteFiles: true);
 
-                if (string.IsNullOrEmpty(newExePath) || !IsValidPeExecutable(newExePath))
-                    throw new InvalidDataException("Extracted package does not contain a valid OLock executable.");
+                    string targetFileName = Path.GetFileName(currentExePath);
+                    string[] candidates = Directory.GetFiles(extractDir, "*.exe", SearchOption.AllDirectories);
+                    string? newExePath = candidates.FirstOrDefault(p => string.Equals(Path.GetFileName(p), targetFileName, StringComparison.OrdinalIgnoreCase))
+                        ?? candidates.FirstOrDefault(p => string.Equals(Path.GetFileName(p), "OLock.exe", StringComparison.OrdinalIgnoreCase))
+                        ?? candidates.FirstOrDefault();
 
-                // 优先采用 Windows NTFS 原地重命名替换（无需外部脚本，保留原路径与托盘配置）
-                string oldExePath = currentExePath + ".old";
-                TryDeleteFile(oldExePath);
+                    if (string.IsNullOrEmpty(newExePath) || !IsValidPeExecutable(newExePath))
+                        throw new InvalidDataException("Extracted package does not contain a valid OLock executable.");
 
-                bool swappedInPlace = false;
-                try
-                {
-                    File.Move(currentExePath, oldExePath);
+                    // 进入不可逆替换阶段前最后一次原子检查取消/关窗闸门
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (tryEnterApplyPhase != null && !tryEnterApplyPhase())
+                        throw new OperationCanceledException(cancellationToken);
+
+                    // 优先采用 Windows NTFS 原地重命名替换（无需外部脚本，保留原路径与托盘配置）
+                    string oldPath = currentExePath + ".old";
+                    TryDeleteFile(oldPath);
+
+                    bool inPlace = false;
                     try
                     {
-                        File.Move(newExePath, currentExePath);
-                        swappedInPlace = true;
+                        File.Move(currentExePath, oldPath);
+                        try
+                        {
+                            File.Move(newExePath, currentExePath);
+                            inPlace = true;
+                        }
+                        catch
+                        {
+                            // 移入新文件失败时立即回滚原可执行文件，保证目录始终可启动
+                            if (!File.Exists(currentExePath) && File.Exists(oldPath))
+                                File.Move(oldPath, currentExePath);
+                            throw;
+                        }
                     }
-                    catch
+                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
                     {
-                        // 移入新文件失败时立即回滚原可执行文件，保证目录始终可启动
-                        if (!File.Exists(currentExePath) && File.Exists(oldExePath))
-                            File.Move(oldExePath, currentExePath);
-                        throw;
+                        LogInfo("Update", $"In-place rename blocked ({ex.Message}), falling back to helper script");
                     }
-                }
-                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
-                {
-                    LogInfo("Update", $"In-place rename blocked ({ex.Message}), falling back to helper script");
-                }
 
-                if (swappedInPlace)
-                {
+                    if (inPlace)
+                    {
+                        try { Directory.Delete(stagingDir, recursive: true); } catch { }
+                        return (true, oldPath);
+                    }
+
+                    // 兜底路径：若运行中重命名被安全软件拦截，暂存为 .new 并拉起隐藏 cmd 等待当前进程退出后覆盖
+                    string pendingExePath = currentExePath + ".new";
+                    File.Copy(newExePath, pendingExePath, overwrite: true);
                     try { Directory.Delete(stagingDir, recursive: true); } catch { }
-                    RestartIntoUpdatedExecutable(currentExePath);
-                    return;
+
+                    LaunchFallbackUpdaterScript(pendingExePath, currentExePath);
+                    return (false, oldPath);
                 }
-
-                // 兜底路径：若运行中重命名被安全软件拦截，暂存为 .new 并拉起隐藏 cmd 等待当前进程退出后覆盖
-                string pendingExePath = currentExePath + ".new";
-                File.Copy(newExePath, pendingExePath, overwrite: true);
-                try { Directory.Delete(stagingDir, recursive: true); } catch { }
-
-                LaunchFallbackUpdaterScript(pendingExePath, currentExePath);
-                ExitForExternalUpdater();
-            }
-            catch
-            {
-                try
+                catch
                 {
-                    if (Directory.Exists(stagingDir))
-                        Directory.Delete(stagingDir, recursive: true);
+                    try
+                    {
+                        if (Directory.Exists(stagingDir))
+                            Directory.Delete(stagingDir, recursive: true);
+                    }
+                    catch { }
+                    throw;
                 }
-                catch { }
-                throw;
+            }, cancellationToken);
+
+            // 回到调用方（UI）线程执行退出与重启，保证 Mutex 释放与 WinForms 生命周期线程亲和
+            if (swappedInPlace)
+            {
+                RestartIntoUpdatedExecutable(currentExePath);
+                return;
             }
+
+            ExitForExternalUpdater();
         }
 
         internal static ProcessStartInfo CreateFallbackUpdaterStartInfo(
