@@ -75,7 +75,7 @@ namespace OLock
             {
                 autoSleep = !autoSleep;
                 if (autoSleep) autoScreenOff = false;
-                UpdateContextMenu();
+                ScheduleContextMenuRebuild();
                 SaveSettings();
                 LogInfo("App", $"Auto-sleep: {(autoSleep ? "enabled" : "disabled")}");
             };
@@ -89,7 +89,7 @@ namespace OLock
             {
                 autoScreenOff = !autoScreenOff;
                 if (autoScreenOff) autoSleep = false;
-                UpdateContextMenu();
+                ScheduleContextMenuRebuild();
                 SaveSettings();
                 LogInfo("App", $"Auto-screen-off: {(autoScreenOff ? "enabled" : "disabled")}");
             };
@@ -113,8 +113,21 @@ namespace OLock
             quitItem.Click += (s, e) =>
             {
                 LogInfo("App", "User quit");
-                ShutdownForExit();
-                Application.Exit();
+                // 延迟到当前菜单 Click 事件栈退出后再销毁托盘菜单与进程资源，避免在回调栈内同步 Dispose 自身
+                var ctx = SynchronizationContext.Current;
+                if (ctx != null)
+                {
+                    ctx.Post(_ =>
+                    {
+                        ShutdownForExit();
+                        Application.Exit();
+                    }, null);
+                }
+                else
+                {
+                    ShutdownForExit();
+                    Application.Exit();
+                }
             };
 
             menu.Items.Add(versionItem);
@@ -194,6 +207,26 @@ namespace OLock
             UpdateForm.ShowUpdateWindow(availableUpdate);
         }
 
+        internal static bool HasPendingMenuRebuild => pendingMenuRebuild;
+
+        private static void ScheduleContextMenuRebuild()
+        {
+            if (trayIcon == null) return;
+            var oldMenu = trayIcon.ContextMenuStrip;
+            if (oldMenu != null && oldMenu.Visible)
+            {
+                pendingMenuRebuild = true;
+                return;
+            }
+
+            pendingMenuRebuild = false;
+            var ctx = SynchronizationContext.Current;
+            if (ctx != null)
+                ctx.Post(_ => UpdateContextMenu(), null);
+            else
+                UpdateContextMenu();
+        }
+
         private static void OnContextMenuClosed(object? sender, ToolStripDropDownClosedEventArgs e)
         {
             if (!pendingMenuRebuild || trayIcon == null)
@@ -207,7 +240,7 @@ namespace OLock
                 UpdateContextMenu();
         }
 
-        private static void UpdateContextMenu()
+        internal static void UpdateContextMenu()
         {
             if (trayIcon == null) return;
             var oldMenu = trayIcon.ContextMenuStrip;

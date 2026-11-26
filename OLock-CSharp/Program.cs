@@ -46,7 +46,10 @@ namespace OLock
 
         // 断开测试进行中标志；DrillReported 在模拟执行器被调用时触发（UI 线程），供测试窗口展示报告
         internal static bool DrillActive { get; private set; }
+        internal static bool IsShuttingDown { get; private set; }
         internal static event Action<string>? DrillReported;
+
+        internal static void ResetShutdownStateForTest() => IsShuttingDown = false;
 
         // 开始断开测试：暂停自动监控，锁屏/睡眠切换为模拟执行，并将状态机强制对齐为在线监控态。
         // 测试期间由测试窗口的定时器作为唯一驱动源 await TickCoreAsync()，杜绝双重 Tick。
@@ -81,8 +84,11 @@ namespace OLock
                 else
                     monitor.ResetToWaiting();
             }
-            UpdateIcon();
-            monitorTimer?.Start();
+            if (!IsShuttingDown)
+            {
+                UpdateIcon();
+                monitorTimer?.Start();
+            }
             LogInfo("Drill", "Disconnect drill ended (monitoring resumed)");
         }
 
@@ -378,11 +384,19 @@ namespace OLock
 
         internal static void ShutdownForExit()
         {
+            IsShuttingDown = true;
             monitorGeneration++;
             CancelStartupUpdateCheck();
+            if (DrillActive)
+                EndDrill(waitReconnect: false);
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
-            monitorTimer?.Stop();
-            monitorTimer?.Dispose();
+            var timer = monitorTimer;
+            monitorTimer = null!;
+            if (timer != null)
+            {
+                try { timer.Stop(); } catch { }
+                try { timer.Dispose(); } catch { }
+            }
             DisposeTrayIcon();
         }
 
