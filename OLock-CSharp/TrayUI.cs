@@ -2,8 +2,8 @@ using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Windows.Forms;
-using Microsoft.Win32;
 
 using static OLock.AppConfigStorage;
 using static OLock.Localization;
@@ -28,6 +28,7 @@ namespace OLock
 
         private static DateTime lastTrayErrorLog = DateTime.MinValue;  // 托盘报错限流
         private static UpdateCheckResult? availableUpdate;
+        private static bool pendingMenuRebuild;
 
         [DllImport("user32.dll")]
         private static extern bool DestroyIcon(IntPtr handle);
@@ -46,6 +47,7 @@ namespace OLock
         private static ContextMenuStrip CreateContextMenu()
         {
             var menu = new ContextMenuStrip();
+            menu.Closed += OnContextMenuClosed;
 
             // 版本号 (菜单顶部，不可点击)
             var versionItem = new ToolStripMenuItem($"{APP_NAME} {AppVersion}")
@@ -111,11 +113,7 @@ namespace OLock
             quitItem.Click += (s, e) =>
             {
                 LogInfo("App", "User quit");
-                CancelStartupUpdateCheck();
-                SystemEvents.PowerModeChanged -= OnPowerModeChanged;
-                monitorTimer?.Stop();
-                monitorTimer?.Dispose();
-                trayIcon.Visible = false;
+                ShutdownForExit();
                 Application.Exit();
             };
 
@@ -138,6 +136,27 @@ namespace OLock
         {
             if (trayIcon != null)
                 trayIcon.Visible = false;
+        }
+
+        internal static void DisposeTrayIcon()
+        {
+            pendingMenuRebuild = false;
+            if (trayIcon == null) return;
+            var iconRef = trayIcon;
+            trayIcon = null!;
+            lastIconState = null;
+            try
+            {
+                iconRef.Visible = false;
+                var oldMenu = iconRef.ContextMenuStrip;
+                iconRef.ContextMenuStrip = null;
+                oldMenu?.Dispose();
+                var oldIcon = iconRef.Icon;
+                iconRef.Icon = null;
+                oldIcon?.Dispose();
+                iconRef.Dispose();
+            }
+            catch { }
         }
 
         internal static void SetCachedAvailableUpdate(UpdateCheckResult? result)
@@ -175,10 +194,30 @@ namespace OLock
             UpdateForm.ShowUpdateWindow(availableUpdate);
         }
 
+        private static void OnContextMenuClosed(object? sender, ToolStripDropDownClosedEventArgs e)
+        {
+            if (!pendingMenuRebuild || trayIcon == null)
+                return;
+
+            pendingMenuRebuild = false;
+            var ctx = SynchronizationContext.Current;
+            if (ctx != null)
+                ctx.Post(_ => UpdateContextMenu(), null);
+            else
+                UpdateContextMenu();
+        }
+
         private static void UpdateContextMenu()
         {
             if (trayIcon == null) return;
             var oldMenu = trayIcon.ContextMenuStrip;
+            // 若用户此时正展开右键菜单，推迟至菜单关闭后再重建，避免在打开瞬间销毁菜单
+            if (oldMenu != null && oldMenu.Visible)
+            {
+                pendingMenuRebuild = true;
+                return;
+            }
+            pendingMenuRebuild = false;
             trayIcon.ContextMenuStrip = CreateContextMenu();
             oldMenu?.Dispose();
         }
@@ -221,15 +260,16 @@ namespace OLock
 
         private static string GetStatusText()
         {
+            var cfg = config;
             if (monitor.IsWaitingForApp)
-                return Tr("tray_waiting", APP_NAME, config.AppProcessName);
+                return Tr("tray_waiting", APP_NAME, cfg.AppProcessName);
             if (monitor.WaitReconnectAfterDrill)
                 return Tr("tray_wait_reconnect", APP_NAME);
             if (monitor.IsWarmup)
                 return Tr("tray_warmup", APP_NAME, monitor.WarmupRemaining);
             if (monitor.IsOnline)
                 return Tr("tray_online", APP_NAME);
-            return Tr("tray_offline", APP_NAME, monitor.OfflineSeconds, config.OfflineSeconds);
+            return Tr("tray_offline", APP_NAME, monitor.OfflineSeconds, cfg.OfflineSeconds);
         }
 
         // UpdateIcon 只在 UI 线程上调用 (由 Timer Tick 触发)，不再有跨线程问题

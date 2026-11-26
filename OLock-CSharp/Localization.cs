@@ -328,7 +328,7 @@ namespace OLock
         {
             var texts = Texts.ContainsKey(currentLang) ? Texts[currentLang] : Texts["en"];
             if (texts.TryGetValue(key, out string? template))
-                return string.Format(template!, args);
+                return args.Length == 0 ? template! : string.Format(template!, args);
             return key;
         }
     }

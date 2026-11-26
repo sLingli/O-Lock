@@ -378,5 +378,20 @@ namespace OLock
                 return $"{bytes / 1024.0:F1} KB";
             return $"{bytes} B";
         }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                try { checkCts?.Cancel(); } catch { }
+                checkCts?.Dispose();
+                checkCts = null;
+
+                try { downloadCts?.Cancel(); } catch { }
+                downloadCts?.Dispose();
+                downloadCts = null;
+            }
+            base.Dispose(disposing);
+        }
     }
 }

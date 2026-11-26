@@ -383,7 +383,7 @@ namespace OLock
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             monitorTimer?.Stop();
             monitorTimer?.Dispose();
-            HideTrayIcon();
+            DisposeTrayIcon();
         }
 
         private static void ReleaseSingleInstanceMutex()
@@ -469,8 +469,9 @@ namespace OLock
                     }
                     else
                     {
-                        string exePath = Process.GetCurrentProcess().MainModule!.FileName;
-                        key.SetValue(APP_NAME, $"\"{exePath}\"");
+                        string? exePath = UpdateService.GetCurrentExecutablePath();
+                        if (!string.IsNullOrWhiteSpace(exePath))
+                            key.SetValue(APP_NAME, $"\"{exePath}\"");
                     }
                 }
             }

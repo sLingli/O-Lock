@@ -119,8 +119,6 @@ namespace OLock
             // 打开窗口时自动检测一次
             Shown += (_, _) => _ = CheckNow();
 
-            // 兜底：无论从哪条路退出（直接关窗/退出程序），都恢复监控与真实执行器
-            FormClosing += (_, _) => StopDisconnectTest(waitReconnect: true);
             drillTimer.Tick += (_, _) => DrillTick();
         }
 
@@ -292,6 +290,8 @@ namespace OLock
         // 恢复初始引导条（保留"已连接"入口状态）
         private void ShowIdleGuide()
         {
+            SetDot(DotGreen);
+            statusLabel.Text = Tr("test_connected");
             guideButton.Visible = true;
             guideButton.Text = Tr("test_drill_start");
             guideLabel.Text = Tr("test_guide_connected");
@@ -299,6 +299,8 @@ namespace OLock
 
         private void ShowInterrupted()
         {
+            SetDot(DotGray);
+            statusLabel.Text = Tr("test_disconnected");
             guideLabel.Text = Tr("test_drill_interrupted");
             guideButton.Text = Tr("test_drill_start");
         }
