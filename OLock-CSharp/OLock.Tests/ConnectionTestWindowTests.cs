@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -10,7 +11,7 @@ using OLock;
 
 namespace OLock.Tests
 {
-    // 测试连接测试窗口生命周期、监控内核防重入/代次丢弃、休眠唤醒跨线程封送及托盘菜单延迟重建
+    // 测试连接测试窗口生命周期、监控内核防重入/代次丢弃、休眠唤醒跨线程封送及托盘菜单延迟重建/退出
     [Collection("GlobalState")]
     public class ConnectionTestWindowTests
     {
@@ -31,7 +32,8 @@ namespace OLock.Tests
                 testTimer.Start();
                 Assert.True(testTimer.Enabled);
 
-                using var window = new ConnectionTestWindow
+                // 关闭自动后台检测与抢占焦点，确保无后台竞态且不打扰桌面焦点
+                using var window = new ConnectionTestWindow(autoCheckOnShow: false, activateOnShow: false)
                 {
                     ShowInTaskbar = false,
                     Opacity = 0
@@ -85,7 +87,7 @@ namespace OLock.Tests
                 testTimer.Start();
                 Assert.True(testTimer.Enabled);
 
-                window = new ConnectionTestWindow();
+                window = new ConnectionTestWindow(autoCheckOnShow: false, activateOnShow: false);
                 window.BeginDisconnectTest();
                 Assert.True(Program.DrillActive);
 
@@ -133,7 +135,7 @@ namespace OLock.Tests
                 Program.monitorFactsProvider = _ => Task.FromResult<(bool, bool?)>((true, false));
                 testTimer.Start();
 
-                using var window = new ConnectionTestWindow
+                using var window = new ConnectionTestWindow(autoCheckOnShow: false, activateOnShow: false)
                 {
                     ShowInTaskbar = false,
                     Opacity = 0
@@ -148,7 +150,7 @@ namespace OLock.Tests
                 Assert.True(Program.monitor.IsWaitingForApp);
                 Assert.False(testTimer.Enabled);
 
-                // Act 2: 测试窗口下一拍 DrillTick 必须在 TickCoreAsync 前拦截并终止演练、复位状态栏文案
+                // Act 2: 测试窗口下一拍 DrillTick 必须在 TickCoreAsync 前拦截并终止演练、复位状态栏文案并隐藏引导按钮
                 await window.DrillTickAsync();
 
                 Assert.False(Program.DrillActive);
@@ -157,6 +159,7 @@ namespace OLock.Tests
                 Assert.True(testTimer.Enabled);
                 Assert.Equal(Localization.Tr("test_disconnected"), window.StatusLabelTextForTest);
                 Assert.Equal(Localization.Tr("test_drill_interrupted"), window.GuideLabelTextForTest);
+                Assert.False(window.GuideButtonVisibleForTest);
             }
             finally
             {
@@ -190,7 +193,7 @@ namespace OLock.Tests
                 Program.monitorTimer = testTimer;
                 testTimer.Start();
 
-                using var window = new ConnectionTestWindow
+                using var window = new ConnectionTestWindow(autoCheckOnShow: false, activateOnShow: false)
                 {
                     ShowInTaskbar = false,
                     Opacity = 0
@@ -233,6 +236,7 @@ namespace OLock.Tests
             long nowMs = 10_000;
             int providerCalls = 0;
             var pendingCheck = new TaskCompletionSource<(bool, bool?)>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task? firstTick = null;
             try
             {
                 Program.ResetShutdownStateForTest();
@@ -251,7 +255,7 @@ namespace OLock.Tests
                 };
 
                 // 第 1 拍发起后台检测并保持挂起
-                Task firstTick = Program.TickCoreAsync();
+                firstTick = Program.TickCoreAsync();
                 Assert.Equal(1, providerCalls);
                 Assert.True(Program.isChecking);
 
@@ -269,13 +273,14 @@ namespace OLock.Tests
 
                 string[] logLines = Logging.ReadLogSnapshotLines();
                 Assert.Contains(logLines, l => l.Contains("Heartbeat:") && l.Contains("checking: True"));
-
-                pendingCheck.SetResult((true, true));
-                await firstTick;
             }
             finally
             {
                 pendingCheck.TrySetResult((false, null));
+                if (firstTick != null)
+                {
+                    try { await firstTick.WaitAsync(TimeSpan.FromSeconds(2)); } catch { }
+                }
                 Program.ResetTickStateForTest();
                 Program.ResetShutdownStateForTest();
                 Program.monitorFactsProvider = prevFacts;
@@ -288,6 +293,116 @@ namespace OLock.Tests
         }
 
         [Fact]
+        public async Task TickCoreAsync_WhenCompletedTaskContinuationPending_DoesNotStartSecondScan()
+        {
+            var prevConfig = Program.config;
+            var prevMonitor = Program.monitor;
+            var prevFacts = Program.monitorFactsProvider;
+            var prevLock = Program.screenLockedProvider;
+            var prevSyncCtx = SynchronizationContext.Current;
+            var queuedCtx = new DeferredSyncContext();
+            var pendingCheck = new TaskCompletionSource<(bool, bool?)>(TaskCreationOptions.RunContinuationsAsynchronously);
+            int providerCalls = 0;
+            Task? tick1 = null;
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(queuedCtx);
+                Program.ResetShutdownStateForTest();
+                Program.ResetTickStateForTest();
+                var cfg = AppConfig.CreateDefault();
+                Program.config = cfg;
+                Program.monitor = new MonitorStateMachine(cfg, _ => { }, _ => { });
+                Program.monitor.ForceOnlineForDrill();
+                Program.screenLockedProvider = () => false;
+                Program.monitorFactsProvider = _ =>
+                {
+                    Interlocked.Increment(ref providerCalls);
+                    return pendingCheck.Task;
+                };
+
+                tick1 = Program.TickCoreAsync();
+                Assert.Equal(1, providerCalls);
+
+                // 让第 1 轮任务已完成 (IsCompleted==true)，但其 UI 延续尚在 queuedCtx 排队未执行
+                pendingCheck.SetResult((true, false));
+                Assert.True(pendingCheck.Task.IsCompleted);
+                Assert.Equal(1, queuedCtx.PendingCount);
+
+                // 在 tick1 延续执行前进入第 2 轮 TickCoreAsync：不得启动第 2 轮扫描或双倍计次
+                await Program.TickCoreAsync();
+                Assert.Equal(1, providerCalls);
+
+                // 消费 tick1 延续，正常推进 1 次离线计数
+                queuedCtx.FlushAll();
+                await tick1.WaitAsync(TimeSpan.FromSeconds(2));
+                Assert.Equal(1, Program.monitor.OfflineSeconds);
+            }
+            finally
+            {
+                pendingCheck.TrySetResult((false, null));
+                queuedCtx.FlushAll();
+                if (tick1 != null)
+                {
+                    try { await tick1.WaitAsync(TimeSpan.FromSeconds(2)); } catch { }
+                }
+                SynchronizationContext.SetSynchronizationContext(prevSyncCtx);
+                Program.ResetTickStateForTest();
+                Program.ResetShutdownStateForTest();
+                Program.monitorFactsProvider = prevFacts;
+                Program.screenLockedProvider = prevLock;
+                Program.monitor = prevMonitor;
+                Program.config = prevConfig;
+            }
+        }
+
+        [Fact]
+        public async Task TickCoreAsync_OnUnlockFirstTick_SkipsScanAndSyncThrowResetsIsChecking()
+        {
+            var prevConfig = Program.config;
+            var prevMonitor = Program.monitor;
+            var prevFacts = Program.monitorFactsProvider;
+            var prevLock = Program.screenLockedProvider;
+            int providerCalls = 0;
+            try
+            {
+                Program.ResetShutdownStateForTest();
+                Program.ResetTickStateForTest();
+                var cfg = AppConfig.CreateDefault();
+                Program.config = cfg;
+                Program.monitor = new MonitorStateMachine(cfg, _ => { }, _ => { });
+                Program.monitor.ForceOnlineForDrill();
+                Program.monitor.WasLocked = true; // 模拟刚处于锁屏态
+                Program.screenLockedProvider = () => false; // 本拍解锁
+                Program.monitorFactsProvider = _ =>
+                {
+                    Interlocked.Increment(ref providerCalls);
+                    throw new InvalidOperationException("sync failure");
+                };
+
+                // 解锁首拍应直接复位回等待态，不发起多余后台扫描
+                await Program.TickCoreAsync();
+                Assert.Equal(0, providerCalls);
+                Assert.True(Program.monitor.IsWaitingForApp);
+                Assert.False(Program.monitor.WasLocked);
+
+                // 验证 monitorFactsProvider 同步抛异常时 isChecking 也能安全归位为 false
+                Program.monitor.ForceOnlineForDrill();
+                await Program.TickCoreAsync();
+                Assert.Equal(1, providerCalls);
+                Assert.False(Program.isChecking);
+            }
+            finally
+            {
+                Program.ResetTickStateForTest();
+                Program.ResetShutdownStateForTest();
+                Program.monitorFactsProvider = prevFacts;
+                Program.screenLockedProvider = prevLock;
+                Program.monitor = prevMonitor;
+                Program.config = prevConfig;
+            }
+        }
+
+        [Fact]
         public async Task TickCoreAsync_GenerationChangeWhileInFlight_DiscardsStaleResult()
         {
             var prevConfig = Program.config;
@@ -295,6 +410,7 @@ namespace OLock.Tests
             var prevFacts = Program.monitorFactsProvider;
             var prevLock = Program.screenLockedProvider;
             var pendingCheck = new TaskCompletionSource<(bool, bool?)>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task? inFlightTick = null;
             try
             {
                 Program.ResetShutdownStateForTest();
@@ -306,7 +422,7 @@ namespace OLock.Tests
                 Program.screenLockedProvider = () => false;
                 Program.monitorFactsProvider = _ => pendingCheck.Task;
 
-                Task inFlightTick = Program.TickCoreAsync();
+                inFlightTick = Program.TickCoreAsync();
 
                 // 在途检测尚未返回时发生 S3 唤醒，推进 monitorGeneration 并复位回等待态
                 Program.OnPowerModeChanged(null!, new PowerModeChangedEventArgs(PowerModes.Resume));
@@ -322,6 +438,10 @@ namespace OLock.Tests
             finally
             {
                 pendingCheck.TrySetResult((false, null));
+                if (inFlightTick != null)
+                {
+                    try { await inFlightTick.WaitAsync(TimeSpan.FromSeconds(2)); } catch { }
+                }
                 Program.ResetTickStateForTest();
                 Program.ResetShutdownStateForTest();
                 Program.monitorFactsProvider = prevFacts;
@@ -407,6 +527,82 @@ namespace OLock.Tests
                 SynchronizationContext.SetSynchronizationContext(prevSyncCtx);
                 Program.monitor = prevMonitor;
                 Program.config = prevConfig;
+            }
+        }
+
+        [Fact]
+        public void TrayUI_ToggleAndQuitClick_DeferMenuDisposalAndRespectUpdateApplyLock()
+        {
+            var prevConfig = Program.config;
+            var prevMonitor = Program.monitor;
+            var prevSleep = Program.autoSleep;
+            var prevScreenOff = Program.autoScreenOff;
+            var prevExit = TrayUI.exitApplicationAction;
+            var prevSyncCtx = SynchronizationContext.Current;
+            string prevLang = Localization.currentLang;
+            var queuedCtx = new DeferredSyncContext();
+            int exitCalls = 0;
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(queuedCtx);
+                Localization.currentLang = "en";
+                Program.ResetShutdownStateForTest();
+                Program.config = AppConfig.CreateDefault();
+                Program.monitor = new MonitorStateMachine(Program.config, _ => { }, _ => { });
+                TrayUI.exitApplicationAction = () => exitCalls++;
+                TrayUI.InitTrayIcon();
+
+                var tray = TrayUI.TrayIconForTest!;
+                var menu1 = tray.ContextMenuStrip!;
+                var sleepItem = menu1.Items.OfType<ToolStripMenuItem>().First(i => i.Text == Localization.Tr("tray_autosleep"));
+
+                // 点击睡眠切换项：不得在 Click 事件栈内同步 Dispose menu1，应异步投递重建
+                sleepItem.PerformClick();
+                Assert.False(menu1.IsDisposed);
+                Assert.True(queuedCtx.PendingCount >= 1);
+
+                queuedCtx.FlushAll();
+                Assert.True(menu1.IsDisposed);
+                Assert.NotSame(menu1, tray.ContextMenuStrip);
+
+                // 若当前处于自更新应用阶段，托盘「退出」必须被拦截
+                var menu2 = tray.ContextMenuStrip!;
+                var quitItem = menu2.Items.OfType<ToolStripMenuItem>().First(i => i.Text == Localization.Tr("tray_quit"));
+                UpdateForm.NotifyApplyStateChanged(true);
+                try
+                {
+                    quitItem.PerformClick();
+                    queuedCtx.FlushAll();
+                    Assert.Equal(0, exitCalls);
+                    Assert.False(Program.IsShuttingDown);
+                }
+                finally
+                {
+                    UpdateForm.NotifyApplyStateChanged(false);
+                }
+
+                // 退出应用阶段后，点击「退出」延迟投递 ShutdownForExit + exitApplicationAction，回调返回前菜单未销毁
+                quitItem.PerformClick();
+                Assert.False(menu2.IsDisposed);
+                Assert.Equal(0, exitCalls);
+                Assert.Equal(1, queuedCtx.PendingCount);
+
+                queuedCtx.FlushAll();
+                Assert.Equal(1, exitCalls);
+                Assert.True(Program.IsShuttingDown);
+                Assert.Null(TrayUI.TrayIconForTest);
+            }
+            finally
+            {
+                TrayUI.exitApplicationAction = prevExit;
+                TrayUI.DisposeTrayIcon();
+                Program.ResetShutdownStateForTest();
+                SynchronizationContext.SetSynchronizationContext(prevSyncCtx);
+                Program.autoSleep = prevSleep;
+                Program.autoScreenOff = prevScreenOff;
+                Program.monitor = prevMonitor;
+                Program.config = prevConfig;
+                Localization.currentLang = prevLang;
             }
         }
 

@@ -95,25 +95,16 @@ namespace OLock.Tests
                 Program.autoScreenOff = true;
                 var executor = new RealLockExecutor(
                     lockWorkStation: () => false,
-                    sendMessageTimeout: (_, _, _, _, _, _) =>
-                    {
-                        screenOffDone.TrySetResult(true);
-                        return IntPtr.Zero;
-                    },
+                    sendMessageTimeout: (_, _, _, _, _, _) => IntPtr.Zero,
                     getLastWin32Error: () => 1460, // ERROR_TIMEOUT
-                    screenOffDelayMs: 0);
+                    screenOffDelayMs: 0,
+                    onScreenOffCompleted: () => screenOffDone.TrySetResult(true));
 
                 var ex = Record.Exception(() => executor.ExecuteLock());
                 Assert.Null(ex);
 
+                // 等待后台关屏回调（含写日志）完整结束，无需轮询
                 await screenOffDone.Task.WaitAsync(TimeSpan.FromSeconds(5));
-                // 给后台 Task 极短时间写完日志行
-                for (int i = 0; i < 20; i++)
-                {
-                    if (Logging.ReadLogSnapshotLines().Any(l => l.Contains("Screen-off broadcast timed out or failed")))
-                        break;
-                    await Task.Delay(15);
-                }
 
                 string[] lines = Logging.ReadLogSnapshotLines();
                 Assert.Contains(lines, l => l.Contains("ERROR:") && l.Contains("LockWorkStation failed (Win32 error 1460)"));

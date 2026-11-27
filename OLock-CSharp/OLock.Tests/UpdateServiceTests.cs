@@ -1,8 +1,10 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Forms;
 using OLock;
 
 namespace OLock.Tests
@@ -467,7 +469,7 @@ namespace OLock.Tests
                 // 验证回滚函数可将 .old 原可执行文件安全恢复回原路径
                 File.WriteAllText(targetExe, "blocked-new-exe");
                 File.WriteAllText(oldExe, "working-old-exe");
-                UpdateService.TryRollbackExecutable(targetExe, oldExe);
+                Assert.True(UpdateService.TryRollbackExecutable(targetExe, oldExe));
 
                 Assert.Equal("working-old-exe", File.ReadAllText(targetExe));
                 Assert.False(File.Exists(oldExe));
@@ -481,6 +483,212 @@ namespace OLock.Tests
                 Program.monitorTimer = prevTimer;
                 try { Directory.Delete(tempDir, recursive: true); } catch { }
             }
+        }
+
+        [Fact]
+        public async Task ApplyDownloadedZipAsync_NullStartAndImmediateCrash_RollsBackAndPreservesTrayAndMonitor()
+        {
+            var prevStarter = Program.processStarter;
+            var prevProbeMs = Program.updatedProcessStabilityProbeMs;
+            var prevTimer = Program.monitorTimer;
+            var prevConfig = Program.config;
+            var prevMonitor = Program.monitor;
+            using var testTimer = new System.Windows.Forms.Timer();
+            string tempDir = Path.Combine(Path.GetTempPath(), $"olock_apply_e2e_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            string targetExe = Path.Combine(tempDir, "OLock.exe");
+            byte[] originalPe = CreateFakePeBytes(0x11);
+            byte[] updatedPe = CreateFakePeBytes(0x22);
+            try
+            {
+                UpdateService.ResetRecoveryStateForTest();
+                Program.ResetShutdownStateForTest();
+                Program.config = AppConfig.CreateDefault();
+                Program.monitor = new MonitorStateMachine(Program.config, _ => { }, _ => { });
+                Program.monitorTimer = testTimer;
+                testTimer.Start();
+                TrayUI.InitTrayIcon();
+
+                await File.WriteAllBytesAsync(targetExe, originalPe);
+
+                // 场景 1: processStarter 返回 null -> 应抛异常、保持托盘与监控存活并自动回滚回原 PE
+                string staging1 = Path.Combine(tempDir, ".olock_update_case1");
+                string zip1 = CreateZipWithExe(staging1, updatedPe);
+                Program.processStarter = _ => null;
+
+                await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                    UpdateService.ApplyDownloadedZipAsync(zip1, targetExe, staging1));
+
+                Assert.False(Program.IsShuttingDown);
+                Assert.True(testTimer.Enabled);
+                Assert.NotNull(TrayUI.TrayIconForTest);
+                Assert.True(TrayUI.TrayIconForTest!.Visible);
+                Assert.Equal(originalPe, await File.ReadAllBytesAsync(targetExe));
+                Assert.False(File.Exists(targetExe + ".old"));
+                Assert.False(UpdateService.PendingManualRecovery);
+
+                // 场景 2: 新版拉起后在 150ms 探测期内瞬时崩溃退出 (cmd /c exit 1) -> 应拦截并回滚
+                string staging2 = Path.Combine(tempDir, ".olock_update_case2");
+                string zip2 = CreateZipWithExe(staging2, updatedPe);
+                Program.updatedProcessStabilityProbeMs = 300;
+                Program.processStarter = _ => Process.Start(new ProcessStartInfo
+                {
+                    FileName = "cmd.exe",
+                    Arguments = "/D /C exit 1",
+                    CreateNoWindow = true,
+                    UseShellExecute = false
+                });
+
+                var crashEx = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                    UpdateService.ApplyDownloadedZipAsync(zip2, targetExe, staging2));
+                Assert.Contains("exited immediately", crashEx.Message);
+                Assert.False(Program.IsShuttingDown);
+                Assert.True(testTimer.Enabled);
+                Assert.NotNull(TrayUI.TrayIconForTest);
+                Assert.True(TrayUI.TrayIconForTest!.Visible);
+                Assert.Equal(originalPe, await File.ReadAllBytesAsync(targetExe));
+                Assert.False(UpdateService.PendingManualRecovery);
+            }
+            finally
+            {
+                UpdateService.ResetRecoveryStateForTest();
+                Program.processStarter = prevStarter;
+                Program.updatedProcessStabilityProbeMs = prevProbeMs;
+                Program.ResetShutdownStateForTest();
+                TrayUI.DisposeTrayIcon();
+                testTimer.Stop();
+                Program.monitorTimer = prevTimer;
+                Program.monitor = prevMonitor;
+                Program.config = prevConfig;
+                try { Directory.Delete(tempDir, recursive: true); } catch { }
+            }
+        }
+
+        [Fact]
+        public async Task ApplyDownloadedZipAsync_WhenRollbackFails_SetsPendingRecoveryAndProtectsOldBackup()
+        {
+            var prevStarter = Program.processStarter;
+            string tempDir = Path.Combine(Path.GetTempPath(), $"olock_rollback_lock_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            string targetExe = Path.Combine(tempDir, "OLock.exe");
+            byte[] originalPe = CreateFakePeBytes(0x33);
+            byte[] updatedPe = CreateFakePeBytes(0x44);
+            FileStream? avLockStream = null;
+            try
+            {
+                UpdateService.ResetRecoveryStateForTest();
+                Program.ResetShutdownStateForTest();
+                await File.WriteAllBytesAsync(targetExe, originalPe);
+
+                string staging1 = Path.Combine(tempDir, ".olock_update_lock1");
+                string zip1 = CreateZipWithExe(staging1, updatedPe);
+
+                // 模拟杀软在启动瞬间独占锁死新版 targetExe 导致启动与回滚均失败
+                Program.processStarter = psi =>
+                {
+                    avLockStream = new FileStream(psi.FileName, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                    throw new System.ComponentModel.Win32Exception("Locked by AV");
+                };
+
+                var ioEx = await Assert.ThrowsAsync<IOException>(() =>
+                    UpdateService.ApplyDownloadedZipAsync(zip1, targetExe, staging1));
+                Assert.Contains("automatic rollback failed", ioEx.Message);
+                Assert.True(UpdateService.PendingManualRecovery);
+                Assert.True(File.Exists(targetExe + ".old"));
+                Assert.Equal(originalPe, await File.ReadAllBytesAsync(targetExe + ".old"));
+
+                // 释放锁后再次尝试更新必须被 PendingManualRecovery 拒绝，严禁删除/覆写唯一 .old 备份
+                avLockStream?.Dispose();
+                avLockStream = null;
+
+                string staging2 = Path.Combine(tempDir, ".olock_update_lock2");
+                string zip2 = CreateZipWithExe(staging2, updatedPe);
+                await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                    UpdateService.ApplyDownloadedZipAsync(zip2, targetExe, staging2));
+
+                Assert.Equal(originalPe, await File.ReadAllBytesAsync(targetExe + ".old"));
+            }
+            finally
+            {
+                avLockStream?.Dispose();
+                UpdateService.ResetRecoveryStateForTest();
+                Program.processStarter = prevStarter;
+                Program.ResetShutdownStateForTest();
+                try { Directory.Delete(tempDir, recursive: true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void UpdateWindow_DuringApplyPhase_BlocksUserCloseAndCancel()
+        {
+            var prefetched = new UpdateCheckResult
+            {
+                Status = UpdateCheckStatus.UpdateAvailable,
+                CurrentVersion = "1.4.1",
+                LatestVersion = "1.5.0",
+                AssetName = "O-Lock-Lite.zip",
+                DownloadUrl = "https://example.com/O-Lock-Lite.zip",
+                ReleaseNotes = "notes"
+            };
+            using var window = new UpdateWindow(prefetched, activateOnShow: false)
+            {
+                ShowInTaskbar = false,
+                Opacity = 0
+            };
+            try
+            {
+                window.Show();
+                Assert.True(window.IsHandleCreated);
+                Assert.False(UpdateForm.IsApplyingUpdate);
+
+                // 进入不可逆应用阶段
+                Assert.True(window.TryEnterApplyPhaseForTest());
+                Assert.True(window.IsApplyingForTest);
+                Assert.True(UpdateForm.IsApplyingUpdate);
+
+                // 用户点击 [X] / Alt+F4 (CloseReason.UserClosing) 必须被拦截
+                window.Close();
+                Assert.False(window.IsDisposed);
+                Assert.True(window.IsApplyingForTest);
+
+                // 应用阶段点击取消不得取消状态
+                window.SimulateCancelClickForTest();
+                Assert.True(window.IsApplyingForTest);
+
+                // 退出应用阶段后可正常关闭
+                window.ExitApplyPhaseForTest();
+                Assert.False(UpdateForm.IsApplyingUpdate);
+                window.Close();
+                Assert.True(window.IsDisposed);
+            }
+            finally
+            {
+                if (!window.IsDisposed)
+                    window.ExitApplyPhaseForTest();
+                Assert.False(UpdateForm.IsApplyingUpdate);
+            }
+        }
+
+        private static byte[] CreateFakePeBytes(byte marker)
+        {
+            byte[] buf = new byte[60 * 1024];
+            buf[0] = 0x4D; // 'M'
+            buf[1] = 0x5A; // 'Z'
+            buf[2] = marker;
+            return buf;
+        }
+
+        private static string CreateZipWithExe(string stagingDir, byte[] peBytes)
+        {
+            Directory.CreateDirectory(stagingDir);
+            string zipPath = Path.Combine(stagingDir, "O-Lock-Lite.zip");
+            using (var archive = ZipFile.Open(zipPath, ZipArchiveMode.Create))
+            {
+                var entry = archive.CreateEntry("OLock.exe");
+                using var s = entry.Open();
+                s.Write(peBytes, 0, peBytes.Length);
+            }
+            return zipPath;
         }
 
         private sealed class SteppingChunkStream : Stream

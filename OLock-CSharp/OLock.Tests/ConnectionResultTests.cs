@@ -6,7 +6,8 @@ using OLock;
 
 namespace OLock.Tests
 {
-    // 连接检测的原因归因测试：验证进程/连接条数/命中情况如何映射为诊断结论
+    // 连接检测的原因归因测试：验证进程/连接条数/命中情况、IP 白名单与 TCP 表解析
+    [Collection("GlobalState")]
     public class ConnectionResultTests
     {
         [Fact]
