@@ -59,6 +59,10 @@ namespace OLock
         internal const string LatestReleaseApiUrl = "https://api.github.com/repos/sLingli/O-Lock/releases/latest";
         internal const string ReleasesPageUrl = "https://github.com/sLingli/O-Lock/releases";
 
+        // 若某次更新替换后拉起新版失败且回滚也失败，锁定后续重试以保护磁盘上唯一可用的 .old 备份
+        internal static bool PendingManualRecovery { get; private set; }
+        internal static void ResetRecoveryStateForTest() => PendingManualRecovery = false;
+
         private static readonly TimeSpan DownloadOverallTimeout = TimeSpan.FromMinutes(10);
         private static readonly TimeSpan DownloadIdleReadTimeout = TimeSpan.FromSeconds(30);
 
@@ -404,8 +408,26 @@ namespace OLock
                 string? exeDir = Path.GetDirectoryName(exePath);
                 if (string.IsNullOrEmpty(exeDir) || !Directory.Exists(exeDir)) return;
 
-                TryDeleteFile(exePath + ".old");
+                string oldFile = exePath + ".old";
+                string failedFile = exePath + ".failed";
+                TryDeleteFile(oldFile);
                 TryDeleteFile(exePath + ".new");
+                TryDeleteFile(failedFile);
+
+                // 快速原地重启时旧进程可能尚未完全释放 .old 句柄，延迟 2 秒再补清一次
+                if (File.Exists(oldFile) || File.Exists(failedFile))
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await Task.Delay(2000).ConfigureAwait(false);
+                            TryDeleteFile(oldFile);
+                            TryDeleteFile(failedFile);
+                        }
+                        catch { }
+                    });
+                }
 
                 foreach (string dir in Directory.GetDirectories(exeDir, ".olock_update_*"))
                 {
@@ -529,6 +551,9 @@ namespace OLock
                 throw new InvalidOperationException("No valid HTTPS download asset found for this release.");
             }
 
+            if (PendingManualRecovery)
+                throw new InvalidOperationException("Previous update rollback did not complete; original backup (.old) is preserved. Please restore it or download manually from the release page.");
+
             string? currentExePath = GetCurrentExecutablePath();
             if (string.IsNullOrWhiteSpace(currentExePath) || !File.Exists(currentExePath))
                 throw new InvalidOperationException("Cannot determine current executable path.");
@@ -536,19 +561,18 @@ namespace OLock
             string exeDir = Path.GetDirectoryName(currentExePath)
                 ?? throw new InvalidOperationException("Cannot determine executable directory.");
 
-            // 下载、解压与替换全流程脱离 UI 线程，避免大包解压阻塞界面或拖拽窗口导致误超时
-            (bool swappedInPlace, string oldExePath) = await Task.Run(async () =>
+            // 下载阶段脱离 UI 线程，避免大包传输阻塞界面或拖拽窗口导致误超时
+            string stagingDir = Path.Combine(exeDir, $".olock_update_{Guid.NewGuid():N}");
+            string zipPath = await Task.Run(async () =>
             {
                 // 下载前先验证目录可写，避免无权限目录下白下载几十 MB
                 EnsureDirectoryWritable(exeDir);
-
-                string stagingDir = Path.Combine(exeDir, $".olock_update_{Guid.NewGuid():N}");
                 Directory.CreateDirectory(stagingDir);
 
                 try
                 {
-                    string zipPath = Path.Combine(stagingDir, release.AssetName ?? "update.zip");
-                    LogInfo("Update", $"Downloading update from {release.DownloadUrl} to {zipPath}");
+                    string downloadedZip = Path.Combine(stagingDir, release.AssetName ?? "update.zip");
+                    LogInfo("Update", $"Downloading update from {release.DownloadUrl} to {downloadedZip}");
 
                     using var headerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                     headerCts.CancelAfter(DownloadIdleReadTimeout);
@@ -579,7 +603,7 @@ namespace OLock
                         }
 
                         await using (netStream)
-                        await using (var fileStream = new FileStream(zipPath, FileMode.Create, FileAccess.Write, FileShare.None, 65536, useAsync: true))
+                        await using (var fileStream = new FileStream(downloadedZip, FileMode.Create, FileAccess.Write, FileShare.None, 65536, useAsync: true))
                         {
                             await CopyStreamWithTimeoutsAsync(
                                 netStream,
@@ -592,6 +616,38 @@ namespace OLock
                         }
                     }
 
+                    return downloadedZip;
+                }
+                catch
+                {
+                    try
+                    {
+                        if (Directory.Exists(stagingDir))
+                            Directory.Delete(stagingDir, recursive: true);
+                    }
+                    catch { }
+                    throw;
+                }
+            }, cancellationToken);
+
+            await ApplyDownloadedZipAsync(zipPath, currentExePath, stagingDir, cancellationToken, tryEnterApplyPhase);
+        }
+
+        // 解压校验已下载的更新包、原路径替换并拉起新版（失败时自动回滚并保护 .old 备份）
+        internal static async Task ApplyDownloadedZipAsync(
+            string zipPath,
+            string currentExePath,
+            string stagingDir,
+            CancellationToken cancellationToken = default,
+            Func<bool>? tryEnterApplyPhase = null)
+        {
+            if (PendingManualRecovery)
+                throw new InvalidOperationException($"Previous update rollback did not complete; backup '{currentExePath}.old' is preserved. Please restore it or download manually from the release page.");
+
+            (bool swappedInPlace, string oldExePath) = await Task.Run(() =>
+            {
+                try
+                {
                     // 解压前再次检查取消，避免下载刚完成时用户已关窗/取消仍继续操作磁盘
                     cancellationToken.ThrowIfCancellationRequested();
 
@@ -671,9 +727,15 @@ namespace OLock
                 {
                     RestartIntoUpdatedExecutable(currentExePath);
                 }
-                catch
+                catch (Exception restartEx)
                 {
-                    TryRollbackExecutable(currentExePath, oldExePath);
+                    if (!TryRollbackExecutable(currentExePath, oldExePath))
+                    {
+                        PendingManualRecovery = true;
+                        throw new IOException(
+                            $"Updated executable failed to start ({restartEx.Message}) and automatic rollback failed. Original backup is preserved at '{oldExePath}'.",
+                            restartEx);
+                    }
                     throw;
                 }
                 return;
@@ -682,12 +744,12 @@ namespace OLock
             ExitForExternalUpdater();
         }
 
-        internal static void TryRollbackExecutable(string targetExePath, string backupOldPath)
+        internal static bool TryRollbackExecutable(string targetExePath, string backupOldPath)
         {
             try
             {
                 if (!File.Exists(backupOldPath))
-                    return;
+                    return true;
 
                 string failedPath = targetExePath + ".failed";
                 TryDeleteFile(failedPath);
@@ -696,10 +758,12 @@ namespace OLock
                 File.Move(backupOldPath, targetExePath);
                 TryDeleteFile(failedPath);
                 LogInfo("Update", $"Rolled back original executable to {targetExePath} after restart failure");
+                return true;
             }
             catch (Exception ex)
             {
                 LogError("Update", $"Failed to rollback executable after restart failure: {Describe(ex)}");
+                return false;
             }
         }
 
@@ -750,11 +814,14 @@ namespace OLock
             var psi = CreateFallbackUpdaterStartInfo(pendingExePath, targetExePath, out string batFilePath);
             try
             {
-                Process.Start(psi);
+                using var proc = Process.Start(psi);
+                if (proc == null)
+                    throw new InvalidOperationException("Failed to start fallback updater script.");
             }
             catch
             {
                 TryDeleteFile(batFilePath);
+                TryDeleteFile(pendingExePath);
                 throw;
             }
         }

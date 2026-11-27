@@ -15,6 +15,17 @@ namespace OLock
     internal static class UpdateForm
     {
         private static UpdateWindow? activeWindow;
+        private static int applyingCount;
+
+        internal static bool IsApplyingUpdate => Volatile.Read(ref applyingCount) > 0;
+
+        internal static void NotifyApplyStateChanged(bool applying)
+        {
+            if (applying)
+                Interlocked.Increment(ref applyingCount);
+            else
+                Interlocked.Decrement(ref applyingCount);
+        }
 
         internal static void ShowUpdateWindow(UpdateCheckResult? prefetched = null)
         {
@@ -60,15 +71,24 @@ namespace OLock
         private CancellationTokenSource? downloadCts;
         private readonly SynchronizationContext? uiContext;
         private readonly object applyGate = new object();
+        private readonly bool activateOnShow;
         private bool isCheckingUpdate;
         private bool isDownloading;
         private bool isApplyingUpdate;
         private bool cancelRequested;
 
+        protected override bool ShowWithoutActivation => !activateOnShow;
+
         public UpdateWindow(UpdateCheckResult? prefetched)
+            : this(prefetched, activateOnShow: true)
+        {
+        }
+
+        internal UpdateWindow(UpdateCheckResult? prefetched, bool activateOnShow)
         {
             currentResult = prefetched;
             uiContext = SynchronizationContext.Current;
+            this.activateOnShow = activateOnShow;
 
             Text = $"{Tr("update_title")} - {APP_NAME} {AppVersion}";
             ClientSize = new Size(520, 362);
@@ -275,17 +295,77 @@ namespace OLock
             }
         }
 
+        internal bool IsApplyingForTest
+        {
+            get { lock (applyGate) return isApplyingUpdate; }
+        }
+
+        internal bool InstallButtonEnabledForTest => installButton.Enabled;
+        internal bool RecheckOrCancelButtonEnabledForTest => recheckOrCancelButton.Enabled;
+
+        internal bool TryEnterApplyPhaseForTest() => TryEnterApplyPhaseCore();
+        internal void ExitApplyPhaseForTest() => SetApplyingState(false);
+        internal void SimulateCancelClickForTest() => OnRecheckOrCancelClicked();
+
+        private void SetApplyingState(bool applying)
+        {
+            bool changed = false;
+            lock (applyGate)
+            {
+                if (isApplyingUpdate != applying)
+                {
+                    isApplyingUpdate = applying;
+                    changed = true;
+                }
+                if (!applying)
+                    cancelRequested = false;
+            }
+            if (changed)
+                UpdateForm.NotifyApplyStateChanged(applying);
+        }
+
+        private bool TryEnterApplyPhaseCore()
+        {
+            bool entered = false;
+            lock (applyGate)
+            {
+                if (cancelRequested || (downloadCts != null && downloadCts.IsCancellationRequested))
+                    return false;
+                if (!isApplyingUpdate)
+                {
+                    isApplyingUpdate = true;
+                    entered = true;
+                }
+            }
+            if (entered)
+                UpdateForm.NotifyApplyStateChanged(true);
+
+            void LockUiForApply()
+            {
+                if (IsDisposed) return;
+                recheckOrCancelButton.Enabled = false;
+                openPageButton.Enabled = false;
+                closeButton.Enabled = false;
+                progressBar.Style = ProgressBarStyle.Marquee;
+                statusLabel.ForeColor = SystemColors.ControlText;
+                statusLabel.Text = Tr("update_applying");
+            }
+
+            if (uiContext != null)
+                uiContext.Post(_ => LockUiForApply(), null);
+            else if (IsHandleCreated)
+                try { BeginInvoke((Action)LockUiForApply); } catch { }
+
+            return true;
+        }
+
         private async Task StartDownloadAndInstallAsync()
         {
             if (currentResult == null || string.IsNullOrWhiteSpace(currentResult.DownloadUrl) || isDownloading)
                 return;
 
             isDownloading = true;
-            lock (applyGate)
-            {
-                isApplyingUpdate = false;
-                cancelRequested = false;
-            }
+            SetApplyingState(false);
             downloadCts?.Dispose();
             downloadCts = new CancellationTokenSource();
 
@@ -305,45 +385,13 @@ namespace OLock
 
             var progress = new Progress<UpdateDownloadProgress>(OnDownloadProgress);
 
-            bool TryEnterApplyPhase()
-            {
-                lock (applyGate)
-                {
-                    if (cancelRequested || downloadCts == null || downloadCts.IsCancellationRequested)
-                        return false;
-                    isApplyingUpdate = true;
-                }
-
-                void LockUiForApply()
-                {
-                    if (IsDisposed) return;
-                    recheckOrCancelButton.Enabled = false;
-                    openPageButton.Enabled = false;
-                    closeButton.Enabled = false;
-                    progressBar.Style = ProgressBarStyle.Marquee;
-                    statusLabel.ForeColor = SystemColors.ControlText;
-                    statusLabel.Text = Tr("update_applying");
-                }
-
-                if (uiContext != null)
-                    uiContext.Post(_ => LockUiForApply(), null);
-                else if (IsHandleCreated)
-                    try { BeginInvoke((Action)LockUiForApply); } catch { }
-
-                return true;
-            }
-
             try
             {
-                await UpdateService.DownloadAndApplyUpdateAsync(currentResult, progress, downloadCts.Token, TryEnterApplyPhase);
+                await UpdateService.DownloadAndApplyUpdateAsync(currentResult, progress, downloadCts.Token, TryEnterApplyPhaseCore);
             }
             catch (OperationCanceledException)
             {
-                lock (applyGate)
-                {
-                    isApplyingUpdate = false;
-                    cancelRequested = false;
-                }
+                SetApplyingState(false);
                 if (!IsDisposed)
                 {
                     statusLabel.ForeColor = SystemColors.ControlText;
@@ -353,17 +401,13 @@ namespace OLock
             }
             catch (Exception ex)
             {
-                lock (applyGate)
-                {
-                    isApplyingUpdate = false;
-                    cancelRequested = false;
-                }
+                SetApplyingState(false);
                 LogError("Update", $"Failed to download/apply update: {Describe(ex)}");
                 if (!IsDisposed)
                 {
                     statusLabel.ForeColor = ColorError;
                     statusLabel.Text = Tr("update_apply_failed", ex.Message);
-                    ResetButtonsAfterDownload(canRetryInstall: true);
+                    ResetButtonsAfterDownload(canRetryInstall: !UpdateService.PendingManualRecovery);
                 }
             }
         }
@@ -413,7 +457,7 @@ namespace OLock
             recheckOrCancelButton.Enabled = true;
             openPageButton.Enabled = true;
             closeButton.Enabled = true;
-            installButton.Enabled = canRetryInstall && !string.IsNullOrWhiteSpace(currentResult?.DownloadUrl);
+            installButton.Enabled = canRetryInstall && !UpdateService.PendingManualRecovery && !string.IsNullOrWhiteSpace(currentResult?.DownloadUrl);
         }
 
         private void OpenReleasePage()
@@ -449,6 +493,7 @@ namespace OLock
         {
             if (disposing)
             {
+                SetApplyingState(false);
                 try { checkCts?.Cancel(); } catch { }
                 checkCts?.Dispose();
                 checkCts = null;

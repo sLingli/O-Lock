@@ -470,12 +470,13 @@ namespace OLock
         }
 
         internal static Func<ProcessStartInfo, Process?> processStarter = Process.Start;
+        internal static int updatedProcessStabilityProbeMs = 150;
 
         internal static void RestartIntoUpdatedExecutable(string exePath)
         {
             LogInfo("Update", $"Restarting into updated executable: {exePath}");
-            // 先拉起新进程（--updated 最多等待 10s 接管单实例锁），确认启动成功后再销毁旧进程托盘与监控，
-            // 避免新版被拦截拉起失败时旧进程变成无托盘孤儿
+            // 先拉起新进程（--updated 最多等待 10s 接管单实例锁），短时探测 150ms 排除缺运行时/被杀软强杀导致的瞬时闪退，
+            // 确认稳定存活后再销毁旧进程托盘与监控，避免新版启动失败时旧进程变成无托盘孤儿
             using var started = processStarter(new ProcessStartInfo
             {
                 FileName = exePath,
@@ -485,6 +486,9 @@ namespace OLock
             });
             if (started == null)
                 throw new InvalidOperationException($"Failed to start updated executable: {exePath}");
+
+            if (updatedProcessStabilityProbeMs > 0 && started.WaitForExit(updatedProcessStabilityProbeMs))
+                throw new InvalidOperationException($"Updated executable exited immediately with exit code {started.ExitCode}.");
 
             ShutdownForExit();
             ReleaseSingleInstanceMutex();

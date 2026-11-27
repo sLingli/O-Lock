@@ -112,6 +112,13 @@ namespace OLock
             var quitItem = new ToolStripMenuItem(Tr("tray_quit"));
             quitItem.Click += (s, e) =>
             {
+                if (UpdateForm.IsApplyingUpdate)
+                {
+                    LogInfo("App", "Quit ignored while update replacement is in progress");
+                    UpdateForm.ShowUpdateWindow();
+                    return;
+                }
+
                 LogInfo("App", "User quit");
                 // 延迟到当前菜单 Click 事件栈退出后再销毁托盘菜单与进程资源，避免在回调栈内同步 Dispose 自身
                 var ctx = SynchronizationContext.Current;
@@ -120,13 +127,13 @@ namespace OLock
                     ctx.Post(_ =>
                     {
                         ShutdownForExit();
-                        Application.Exit();
+                        exitApplicationAction();
                     }, null);
                 }
                 else
                 {
                     ShutdownForExit();
-                    Application.Exit();
+                    exitApplicationAction();
                 }
             };
 
@@ -207,6 +214,7 @@ namespace OLock
             UpdateForm.ShowUpdateWindow(availableUpdate);
         }
 
+        internal static Action exitApplicationAction = Application.Exit;
         internal static NotifyIcon? TrayIconForTest => trayIcon;
         internal static bool HasPendingMenuRebuild => pendingMenuRebuild;
 

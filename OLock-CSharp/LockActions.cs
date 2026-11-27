@@ -49,9 +49,10 @@ namespace OLock
         private readonly Func<IntPtr, uint, IntPtr, IntPtr, uint, uint, IntPtr> sendMessageTimeoutFn;
         private readonly Func<int> getLastWin32ErrorFn;
         private readonly int screenOffDelayMs;
+        private readonly Action? onScreenOffCompleted;
 
         public RealLockExecutor()
-            : this(null, null, null, 500)
+            : this(null, null, null, 500, null)
         {
         }
 
@@ -59,13 +60,15 @@ namespace OLock
             Func<bool>? lockWorkStation,
             Func<IntPtr, uint, IntPtr, IntPtr, uint, uint, IntPtr>? sendMessageTimeout,
             Func<int>? getLastWin32Error,
-            int screenOffDelayMs = 500)
+            int screenOffDelayMs = 500,
+            Action? onScreenOffCompleted = null)
         {
             lockWorkStationFn = lockWorkStation ?? LockWorkStation;
             sendMessageTimeoutFn = sendMessageTimeout ?? ((hWnd, msg, wParam, lParam, flags, timeout) =>
                 SendMessageTimeout(hWnd, msg, wParam, lParam, flags, timeout, out _));
             getLastWin32ErrorFn = getLastWin32Error ?? Marshal.GetLastWin32Error;
             this.screenOffDelayMs = Math.Max(0, screenOffDelayMs);
+            this.onScreenOffCompleted = onScreenOffCompleted;
         }
 
         public void ExecuteLock()
@@ -106,6 +109,10 @@ namespace OLock
                     catch (Exception ex)
                     {
                         LogError("Action", $"Screen-off command failed: {Describe(ex)}");
+                    }
+                    finally
+                    {
+                        onScreenOffCompleted?.Invoke();
                     }
                 });
             }
