@@ -30,7 +30,7 @@ When using **OPPO Connect (PC Connect)**, the native Windows "Dynamic Lock" ofte
     - 🟢 **Green**: Phone Online & Guarding.
 4.  **Start on Boot**: Right-click the tray icon -> Check **"Start on Boot"**.
 5.  **Settings**: Right-click the tray icon -> **Settings** to change the process name, offline tolerance, warmup, and more.
-    All settings live in the registry under `HKCU\Software\OLock`. Since **v1.3.2** the `olock.config.json` next to the executable is no longer read.
+    All settings live in the registry under `HKCU\Software\OLock`. Since **v1.3.2** the `olock.config.json` next to the executable is no longer read. When upgrading from v1.4.x, clear **Allowed IP prefixes** in Settings if you want automatic matching across all private/LAN (`172.16.x`, etc.) and IPv6 networks.
 
 ### 🧪 Connection Test (new in v1.4.0)
 

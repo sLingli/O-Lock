@@ -96,6 +96,7 @@ namespace OLock
         internal static System.Windows.Forms.Timer monitorTimer = null!;
         internal static bool isChecking = false;    // 当前是否处于后台连接检测中（供心跳诊断）
         private static int heartbeatTicks = 0;      // 详细模式心跳计数
+        private static bool inFlightHeartbeatCounted = false; // 慢扫描跨秒时防止在途跳与完成跳重复计次
         private static Task<(bool AppRunning, bool? PhoneConnected)>? inFlightFactTask;
         private static int monitorGeneration = 0;   // 模式切换代次，丢弃状态变化前的在途检查结果
         private static SynchronizationContext? mainUiContext;
@@ -112,6 +113,7 @@ namespace OLock
         internal static void ResetTickStateForTest()
         {
             inFlightFactTask = null;
+            inFlightHeartbeatCounted = false;
             isChecking = false;
             heartbeatTicks = 0;
         }
@@ -281,7 +283,7 @@ namespace OLock
         // MonitorTick 在 UI 线程上由 Forms.Timer 触发 (每 1 秒)，是断开演练之外唯一的驱动源。
         static async void MonitorTick(object? sender, EventArgs e) => await TickCoreAsync();
 
-        private static void AdvanceMonitorAndHeartbeat(bool screenLocked, bool appRunning, bool? phoneConnected)
+        private static void AdvanceMonitorAndHeartbeat(bool screenLocked, bool appRunning, bool? phoneConnected, bool countHeartbeat = true)
         {
             var action = monitor.Tick(screenLocked, appRunning, phoneConnected);
             if (action == MonitorAction.Lock)
@@ -294,7 +296,7 @@ namespace OLock
             UpdateIcon();
 
             // 详细模式心跳：每 30 秒一条状态摘要，用于判断"卡住没有、卡在哪一步"
-            if (config.LogVerbose && !screenLocked && ++heartbeatTicks >= 30)
+            if (countHeartbeat && config.LogVerbose && !screenLocked && ++heartbeatTicks >= 30)
             {
                 heartbeatTicks = 0;
                 int staleSeconds = monitor.GetSecondsSinceLastCheck();
@@ -304,7 +306,7 @@ namespace OLock
 
         // TickCoreAsync 是监控内核：收集事实 (屏幕锁定/进程存活/手机连接) → 交给状态机决策 → 经执行器执行动作 → 刷新图标。
         // 返回 Task 供测试窗口 await，保证每次 Tick 完整走完后再读取最新状态。
-        // 上一轮检测未结束时不重叠发起新扫描，但仍以 phoneConnected=null 推进状态机以保障过期保护与 30s 心跳诊断。
+        // 上一轮检测未结束（含已完成但 UI 延续尚在排队）时不重叠发起新扫描，但仍以 phoneConnected=null 推进状态机以保障过期保护与 30s 心跳诊断。
         internal static async Task TickCoreAsync()
         {
             if (IsShuttingDown)
@@ -317,32 +319,42 @@ namespace OLock
                 {
                     if (!monitor.WasLocked)
                         monitorGeneration++;
-                    AdvanceMonitorAndHeartbeat(screenLocked: true, appRunning: false, phoneConnected: null);
+                    AdvanceMonitorAndHeartbeat(screenLocked: true, appRunning: false, phoneConnected: null, countHeartbeat: false);
                     return;
                 }
 
-                // 若上一轮后台检测仍在途，不启动重叠扫描，但继续驱动状态机过期保护与心跳诊断
-                if (inFlightFactTask != null && !inFlightFactTask.IsCompleted)
+                // 解锁首拍：状态机将直接复位回等待态，无需做一次注定被丢弃的后台扫描
+                if (monitor.WasLocked)
                 {
-                    AdvanceMonitorAndHeartbeat(screenLocked: false, appRunning: !monitor.IsWaitingForApp, phoneConnected: null);
+                    monitorGeneration++;
+                    AdvanceMonitorAndHeartbeat(screenLocked: false, appRunning: false, phoneConnected: null, countHeartbeat: false);
+                    return;
+                }
+
+                // 上一轮任务尚未完成或 UI 延续尚未收尾：绝不重叠启动第二轮扫描，同时继续驱动过期保护与 30s 心跳
+                if (inFlightFactTask != null)
+                {
+                    inFlightHeartbeatCounted = true;
+                    AdvanceMonitorAndHeartbeat(screenLocked: false, appRunning: !monitor.IsWaitingForApp, phoneConnected: null, countHeartbeat: true);
                     return;
                 }
 
                 int tickGen = monitorGeneration;
                 bool needConnectionCheck = !monitor.IsWaitingForApp;
-                isChecking = needConnectionCheck;
-                var factTask = monitorFactsProvider(needConnectionCheck);
-                inFlightFactTask = factTask;
-
+                Task<(bool AppRunning, bool? PhoneConnected)>? factTask = null;
                 bool appRunning;
                 bool? phoneConnected;
                 try
                 {
+                    isChecking = needConnectionCheck;
+                    inFlightHeartbeatCounted = false;
+                    factTask = monitorFactsProvider(needConnectionCheck);
+                    inFlightFactTask = factTask;
                     (appRunning, phoneConnected) = await factTask;
                 }
                 finally
                 {
-                    if (ReferenceEquals(inFlightFactTask, factTask))
+                    if (factTask == null || ReferenceEquals(inFlightFactTask, factTask))
                     {
                         inFlightFactTask = null;
                         isChecking = false;
@@ -353,7 +365,7 @@ namespace OLock
                 if (tickGen != monitorGeneration || IsShuttingDown)
                     return;
 
-                AdvanceMonitorAndHeartbeat(screenLocked: false, appRunning, phoneConnected);
+                AdvanceMonitorAndHeartbeat(screenLocked: false, appRunning, phoneConnected, countHeartbeat: !inFlightHeartbeatCounted);
             }
             catch (Exception ex)
             {

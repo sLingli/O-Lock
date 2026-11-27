@@ -98,6 +98,8 @@ namespace OLock
             y += 32;
 
             // 允许的 IP 前缀（留空 = 自动匹配所有私网与局域网 IP）
+            var tip = new ToolTip();
+            form.FormClosed += (_, _) => tip.Dispose();
             form.Controls.Add(new Label { Text = Tr("settings_allowed_prefixes"), Left = 10, Top = y + 3, Width = labelW });
             var txtAllowed = new TextBox
             {
@@ -107,6 +109,7 @@ namespace OLock
                 Text = string.Join(",", currentConfig.AllowedRemoteIpPrefixes),
                 PlaceholderText = Tr("settings_allowed_prefixes_hint")
             };
+            tip.SetToolTip(txtAllowed, Tr("settings_allowed_prefixes_hint"));
             form.Controls.Add(txtAllowed);
             y += 32;
 
@@ -184,15 +187,15 @@ namespace OLock
         {
             var nextConfig = new AppConfig
             {
-                AppProcessName = processName.Trim(),
+                AppProcessName = (processName ?? string.Empty).Trim(),
                 OfflineSeconds = offlineSeconds,
                 WarmupSeconds = warmupSeconds,
                 MinWarmupSeconds = baseConfig.MinWarmupSeconds,
                 MaxWarmupSeconds = baseConfig.MaxWarmupSeconds,
-                AllowedRemoteIpPrefixes = allowedPrefixesCsv.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries),
-                IgnoredRemoteIpPrefixes = ignoredPrefixesCsv.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries),
-                SleepCommand = sleepCommand.Trim(),
-                SleepArguments = sleepArguments,
+                AllowedRemoteIpPrefixes = (allowedPrefixesCsv ?? string.Empty).Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries),
+                IgnoredRemoteIpPrefixes = (ignoredPrefixesCsv ?? string.Empty).Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries),
+                SleepCommand = (sleepCommand ?? string.Empty).Trim(),
+                SleepArguments = sleepArguments ?? string.Empty,
                 LogRetentionDays = logRetentionDays,
                 LogVerbose = logVerbose,
                 CheckUpdatesOnStartup = checkUpdatesOnStartup
@@ -201,6 +204,7 @@ namespace OLock
 
             config = nextConfig;
             monitor?.UpdateConfig(nextConfig);
+            TrayUI.UpdateIcon();
             SaveSettings(registrySubKey);
             CleanupExpiredEntries(); // 立即按新的保留天数清理
             LogInfo("Config", "Settings saved");

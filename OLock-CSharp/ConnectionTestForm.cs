@@ -55,14 +55,27 @@ namespace OLock
         private readonly Button guideButton = new Button();
         private readonly Label footerLabel = new Label();
 
+        private readonly bool autoCheckOnShow;
+        private readonly bool activateOnShow;
+        private int checkGeneration;     // 演练/重测代次，丢弃过时的后台 CheckNow 结果
+
         // 断开测试驱动：窗口自有定时器，演练期间是监控的唯一驱动源
         private readonly System.Windows.Forms.Timer drillTimer = new System.Windows.Forms.Timer { Interval = 1000 };
         private bool drillLockHandled;   // 第一次模拟执行报告即完成，防止 dry-run 下每秒重复 Lock 刷屏
         private bool drillUiActive;      // 窗口侧的测试态标志（按钮/引导条切换用）
         private bool drillTickRunning;   // 防止异步 Tick 重入
 
+        protected override bool ShowWithoutActivation => !activateOnShow;
+
         public ConnectionTestWindow()
+            : this(autoCheckOnShow: true, activateOnShow: true)
         {
+        }
+
+        internal ConnectionTestWindow(bool autoCheckOnShow, bool activateOnShow)
+        {
+            this.autoCheckOnShow = autoCheckOnShow;
+            this.activateOnShow = activateOnShow;
             Text = $"{Tr("test_title")} - {APP_NAME} {AppVersion}";
             ClientSize = new Size(500, 300);
             StartPosition = FormStartPosition.CenterScreen;
@@ -117,7 +130,11 @@ namespace OLock
             Controls.Add(footerLabel);
 
             // 打开窗口时自动检测一次
-            Shown += (_, _) => _ = CheckNow();
+            Shown += (_, _) =>
+            {
+                if (this.autoCheckOnShow)
+                    _ = CheckNow();
+            };
 
             drillTimer.Tick += (_, _) => DrillTick();
         }
@@ -126,6 +143,7 @@ namespace OLock
         private async Task CheckNow()
         {
             if (DrillActive || drillUiActive) return;
+            int myCheckGen = ++checkGeneration;
             checkButton.Enabled = false;
             checkButton.Text = Tr("test_checking");
             SetDot(DotAmber);
@@ -133,7 +151,7 @@ namespace OLock
             try
             {
                 var result = await CheckPhoneConnectionDetailAsync();
-                if (IsDisposed || !IsHandleCreated || DrillActive || drillUiActive) return;
+                if (IsDisposed || !IsHandleCreated || DrillActive || drillUiActive || myCheckGen != checkGeneration) return;
 
                 LogInfo("Test", $"Manual check: {(result.IsConnected ? "Connected" : "Disconnected")} " +
                     $"(Reason: {result.Reason}, Hit: {result.RemoteIp ?? "-"})");
@@ -141,7 +159,7 @@ namespace OLock
             }
             catch (Exception ex)
             {
-                if (!IsDisposed && IsHandleCreated && !DrillActive && !drillUiActive)
+                if (!IsDisposed && IsHandleCreated && !DrillActive && !drillUiActive && myCheckGen == checkGeneration)
                 {
                     LogError("Test", $"Connection check failed: {Describe(ex)}");
                     SetDot(DotRed);
@@ -150,7 +168,7 @@ namespace OLock
             }
             finally
             {
-                if (!IsDisposed && IsHandleCreated && !DrillActive && !drillUiActive)
+                if (!IsDisposed && IsHandleCreated && !DrillActive && !drillUiActive && myCheckGen == checkGeneration)
                 {
                     checkButton.Enabled = true;
                     checkButton.Text = Tr("test_recheck");
@@ -218,6 +236,7 @@ namespace OLock
         internal void BeginDisconnectTest()
         {
             if (DrillActive) return;
+            checkGeneration++;
             drillLockHandled = false;
             drillUiActive = true;
 
@@ -311,17 +330,21 @@ namespace OLock
             guideLabel.Text = Tr("test_guide_connected");
         }
 
+        internal bool GuideButtonVisibleForTest => guideButton.Visible;
+
         private void ShowInterrupted()
         {
             SetDot(DotGray);
             statusLabel.Text = Tr("test_disconnected");
             guideLabel.Text = Tr("test_drill_interrupted");
+            guideButton.Visible = false;
             guideButton.Text = Tr("test_drill_start");
         }
 
         // 窗口侧统一收尾：停表、退订事件、恢复按钮。Program.EndDrill 幂等，重复调用无害。
         private void StopDisconnectTest(bool waitReconnect)
         {
+            checkGeneration++;
             drillTimer.Stop();
             DrillReported -= OnDrillReported;
             EndDrill(waitReconnect);
@@ -330,14 +353,20 @@ namespace OLock
                 checkButton.Enabled = true;
         }
 
-        private string DescribeReason(PhoneConnectionResult result) => result.Reason switch
+        private string DescribeReason(PhoneConnectionResult result)
         {
-            ConnectionReason.Connected => Tr("test_reason_connected"),
-            ConnectionReason.ProcessNotRunning => Tr("test_reason_process"),
-            ConnectionReason.NoEstablishedConnection => Tr("test_reason_no_connection"),
-            ConnectionReason.IpNotMatched => Tr("test_reason_ip_mismatch", result.EstablishedCount, string.Join(", ", result.SampleRemoteIps)),
-            _ => Tr("test_reason_check_failed")
-        };
+            var allowed = config.AllowedRemoteIpPrefixes;
+            return result.Reason switch
+            {
+                ConnectionReason.Connected => Tr("test_reason_connected"),
+                ConnectionReason.ProcessNotRunning => Tr("test_reason_process"),
+                ConnectionReason.NoEstablishedConnection => Tr("test_reason_no_connection"),
+                ConnectionReason.IpNotMatched => allowed.Length > 0
+                    ? Tr("test_reason_ip_mismatch_filtered", result.EstablishedCount, string.Join(", ", result.SampleRemoteIps), string.Join(",", allowed))
+                    : Tr("test_reason_ip_mismatch", result.EstablishedCount, string.Join(", ", result.SampleRemoteIps)),
+                _ => Tr("test_reason_check_failed")
+            };
+        }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
