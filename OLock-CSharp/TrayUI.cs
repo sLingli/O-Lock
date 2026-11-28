@@ -115,7 +115,7 @@ namespace OLock
                 if (UpdateForm.IsApplyingUpdate)
                 {
                     LogInfo("App", "Quit ignored while update replacement is in progress");
-                    UpdateForm.ShowUpdateWindow();
+                    UpdateForm.BringActiveWindowToFront();
                     return;
                 }
 

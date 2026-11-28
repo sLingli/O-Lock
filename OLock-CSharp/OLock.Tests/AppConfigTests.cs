@@ -1,12 +1,32 @@
 using System;
+using System.Threading;
+using System.Windows.Forms;
 using Microsoft.Win32;
 using OLock;
 
 namespace OLock.Tests
 {
+    // 禁用 WinForms 在 xUnit 工作线程上自动安装无人泵消息的 WindowsFormsSynchronizationContext，
+    // 彻底杜绝跨用例因执行顺序不同导致的 async Task 死锁；需要真实 WinForms 消息泵的用例自行显式安装并恢复。
+    public sealed class GlobalStateFixture : IDisposable
+    {
+        private readonly bool prevAutoInstall;
+
+        public GlobalStateFixture()
+        {
+            prevAutoInstall = WindowsFormsSynchronizationContext.AutoInstall;
+            WindowsFormsSynchronizationContext.AutoInstall = false;
+        }
+
+        public void Dispose()
+        {
+            WindowsFormsSynchronizationContext.AutoInstall = prevAutoInstall;
+        }
+    }
+
     // 涉及共享静态状态 (Program.config / Localization / Logging) 的测试类归入同一集合，避免 xUnit 跨类并发互相踩写
     [CollectionDefinition("GlobalState", DisableParallelization = true)]
-    public sealed class GlobalStateCollection { }
+    public sealed class GlobalStateCollection : ICollectionFixture<GlobalStateFixture> { }
 
     // 配置默认值、Normalize 钳制与旧版设置迁移的测试
     [Collection("GlobalState")]

@@ -27,6 +27,17 @@ namespace OLock
                 Interlocked.Decrement(ref applyingCount);
         }
 
+        internal static void BringActiveWindowToFront()
+        {
+            if (activeWindow == null || activeWindow.IsDisposed)
+                return;
+            if (activeWindow.WindowState == FormWindowState.Minimized)
+                activeWindow.WindowState = FormWindowState.Normal;
+            activeWindow.Show();
+            activeWindow.Activate();
+            activeWindow.BringToFront();
+        }
+
         internal static void ShowUpdateWindow(UpdateCheckResult? prefetched = null)
         {
             if (activeWindow != null && !activeWindow.IsDisposed)

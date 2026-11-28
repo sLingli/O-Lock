@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -242,6 +243,7 @@ namespace OLock.Tests
                     "update_notes_empty",
                     "update_applying",
                     "update_cancelled",
+                    "update_manual_recovery_locked",
                     "update_btn_install",
                     "update_btn_recheck",
                     "update_btn_cancel",
@@ -490,6 +492,7 @@ namespace OLock.Tests
         {
             var prevStarter = Program.processStarter;
             var prevProbeMs = Program.updatedProcessStabilityProbeMs;
+            var prevExitAction = Program.exitForUpdateAction;
             var prevTimer = Program.monitorTimer;
             var prevConfig = Program.config;
             var prevMonitor = Program.monitor;
@@ -503,6 +506,7 @@ namespace OLock.Tests
             {
                 UpdateService.ResetRecoveryStateForTest();
                 Program.ResetShutdownStateForTest();
+                Program.exitForUpdateAction = () => { }; // 防止极端高负载超时误杀 testhost
                 Program.config = AppConfig.CreateDefault();
                 Program.monitor = new MonitorStateMachine(Program.config, _ => { }, _ => { });
                 Program.monitorTimer = testTimer;
@@ -527,10 +531,10 @@ namespace OLock.Tests
                 Assert.False(File.Exists(targetExe + ".old"));
                 Assert.False(UpdateService.PendingManualRecovery);
 
-                // 场景 2: 新版拉起后在 150ms 探测期内瞬时崩溃退出 (cmd /c exit 1) -> 应拦截并回滚
+                // 场景 2: 新版拉起后在探测期内瞬时崩溃退出 (cmd /c exit 1) -> 应拦截并回滚（2000ms 上限防高负载抖动，正常 ~30ms 即返回）
                 string staging2 = Path.Combine(tempDir, ".olock_update_case2");
                 string zip2 = CreateZipWithExe(staging2, updatedPe);
-                Program.updatedProcessStabilityProbeMs = 300;
+                Program.updatedProcessStabilityProbeMs = 2000;
                 Program.processStarter = _ => Process.Start(new ProcessStartInfo
                 {
                     FileName = "cmd.exe",
@@ -554,6 +558,7 @@ namespace OLock.Tests
                 UpdateService.ResetRecoveryStateForTest();
                 Program.processStarter = prevStarter;
                 Program.updatedProcessStabilityProbeMs = prevProbeMs;
+                Program.exitForUpdateAction = prevExitAction;
                 Program.ResetShutdownStateForTest();
                 TrayUI.DisposeTrayIcon();
                 testTimer.Stop();
@@ -666,6 +671,233 @@ namespace OLock.Tests
                 if (!window.IsDisposed)
                     window.ExitApplyPhaseForTest();
                 Assert.False(UpdateForm.IsApplyingUpdate);
+            }
+        }
+
+        [Fact]
+        public void TryRollbackExecutable_WhenBackupOldMissing_ReturnsFalseAndLogsError()
+        {
+            string tempLog = Path.Combine(Path.GetTempPath(), $"olock_missing_old_{Guid.NewGuid():N}.log");
+            string? prevLogPath = Logging.SwapLogFilePath(tempLog);
+            string tempDir = Path.Combine(Path.GetTempPath(), $"olock_missing_old_dir_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string targetExe = Path.Combine(tempDir, "OLock.exe");
+                string missingOld = targetExe + ".old";
+                File.WriteAllText(targetExe, "new-broken-exe");
+
+                bool ok = UpdateService.TryRollbackExecutable(targetExe, missingOld);
+                Assert.False(ok);
+
+                string[] lines = Logging.ReadLogSnapshotLines();
+                Assert.Contains(lines, l => l.Contains("ERROR:") && l.Contains("no longer exists"));
+            }
+            finally
+            {
+                Logging.SwapLogFilePath(prevLogPath);
+                try { if (File.Exists(tempLog)) File.Delete(tempLog); } catch { }
+                try { Directory.Delete(tempDir, recursive: true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void UpdateWindow_EndToEndInstallFailureAndRecheck_LocksQuitDuringApplyAndDisablesInstallAfterRecoveryLock()
+        {
+            var prevStarter = Program.processStarter;
+            var prevExitAction = Program.exitForUpdateAction;
+            var prevTrayExit = TrayUI.exitApplicationAction;
+            var prevConfig = Program.config;
+            var prevMonitor = Program.monitor;
+            var prevSyncCtx = SynchronizationContext.Current;
+            string prevLang = Localization.currentLang;
+            string tempDir = Path.Combine(Path.GetTempPath(), $"olock_ui_e2e_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            string targetExe = Path.Combine(tempDir, "OLock.exe");
+            byte[] originalPe = CreateFakePeBytes(0x55);
+            byte[] updatedPe = CreateFakePeBytes(0x66);
+            FileStream? avLockStream = null;
+            int trayExitCalls = 0;
+            bool closeBlockedDuringApply = false;
+            bool quitBlockedDuringApply = false;
+            using var pumpCtx = new PumpableSyncContext();
+            try
+            {
+                File.WriteAllBytes(targetExe, originalPe);
+                string staging = Path.Combine(tempDir, ".olock_update_ui");
+                string zipPath = CreateZipWithExe(staging, updatedPe);
+
+                SynchronizationContext.SetSynchronizationContext(pumpCtx);
+                Localization.currentLang = "en";
+                UpdateService.ResetRecoveryStateForTest();
+                Program.ResetShutdownStateForTest();
+                Program.exitForUpdateAction = () => { };
+                TrayUI.exitApplicationAction = () => trayExitCalls++;
+                Program.config = AppConfig.CreateDefault();
+                Program.monitor = new MonitorStateMachine(Program.config, _ => { }, _ => { });
+                TrayUI.InitTrayIcon();
+
+                var prefetched = new UpdateCheckResult
+                {
+                    Status = UpdateCheckStatus.UpdateAvailable,
+                    CurrentVersion = "1.4.1",
+                    LatestVersion = "1.5.0",
+                    AssetName = "O-Lock-Lite.zip",
+                    DownloadUrl = "https://example.com/O-Lock-Lite.zip",
+                    ReleaseNotes = "release notes"
+                };
+
+                using var window = new UpdateWindow(prefetched, activateOnShow: false)
+                {
+                    ShowInTaskbar = false,
+                    Opacity = 0
+                };
+                window.Show();
+                window.RenderCheckResultForTest(prefetched);
+                Assert.True(window.IsHandleCreated);
+                Assert.True(window.InstallButtonEnabledForTest);
+
+                // 将 UI 安装入口直连真实的 ApplyDownloadedZipAsync，演练真实回调链路
+                window.installExecutorForTest = (_, _, token, tryEnterApply) =>
+                    UpdateService.ApplyDownloadedZipAsync(zipPath, targetExe, staging, token, tryEnterApply);
+
+                var quitItem = TrayUI.TrayIconForTest!.ContextMenuStrip!.Items
+                    .OfType<ToolStripMenuItem>()
+                    .First(i => i.Text == Localization.Tr("tray_quit"));
+
+                Program.processStarter = psi =>
+                {
+                    // 此刻正处于真实进入应用阶段后的重启调用点（UI 线程）：验证窗口关窗锁与托盘退出锁同时生效
+                    Assert.True(UpdateForm.IsApplyingUpdate);
+                    window.Close();
+                    closeBlockedDuringApply = !window.IsDisposed;
+
+                    quitItem.PerformClick();
+                    quitBlockedDuringApply = trayExitCalls == 0 && !Program.IsShuttingDown;
+
+                    // 锁死新版 exe 并抛错，使重启与回滚双失败，触发 PendingManualRecovery
+                    avLockStream = new FileStream(psi.FileName, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                    throw new System.ComponentModel.Win32Exception("Locked by AV");
+                };
+
+                // 纯托管单线程消息泵驱动 async 延续回到测试线程，零 WindowsFormsSynchronizationContext 跨线程死锁风险
+                Task installTask = window.RunInstallForTestAsync();
+                pumpCtx.PumpUntil(() => installTask.IsCompleted, timeoutMs: 5000);
+                Assert.True(installTask.IsCompleted, "Install flow did not complete within 5s");
+                Assert.Equal(TaskStatus.RanToCompletion, installTask.Status);
+
+                Assert.True(closeBlockedDuringApply);
+                Assert.True(quitBlockedDuringApply);
+                Assert.True(UpdateService.PendingManualRecovery);
+                Assert.False(UpdateForm.IsApplyingUpdate);
+                Assert.False(window.InstallButtonEnabledForTest);
+
+                // 再次刷新检查结果或重开新窗口：安装按钮必须保持禁用并显示手动恢复锁定提示（前后端一致）
+                window.RenderCheckResultForTest(prefetched);
+                Assert.False(window.InstallButtonEnabledForTest);
+                Assert.Equal(Localization.Tr("update_manual_recovery_locked"), window.StatusLabelTextForTest);
+
+                using var reopened = new UpdateWindow(prefetched, activateOnShow: false)
+                {
+                    ShowInTaskbar = false,
+                    Opacity = 0
+                };
+                reopened.Show();
+                reopened.RenderCheckResultForTest(prefetched);
+                Assert.False(reopened.InstallButtonEnabledForTest);
+                Assert.Equal(Localization.Tr("update_manual_recovery_locked"), reopened.StatusLabelTextForTest);
+            }
+            finally
+            {
+                avLockStream?.Dispose();
+                UpdateService.ResetRecoveryStateForTest();
+                Program.processStarter = prevStarter;
+                Program.exitForUpdateAction = prevExitAction;
+                TrayUI.exitApplicationAction = prevTrayExit;
+                TrayUI.DisposeTrayIcon();
+                Program.ResetShutdownStateForTest();
+                SynchronizationContext.SetSynchronizationContext(prevSyncCtx);
+                Program.monitor = prevMonitor;
+                Program.config = prevConfig;
+                Localization.currentLang = prevLang;
+                try { Directory.Delete(tempDir, recursive: true); } catch { }
+            }
+        }
+
+        private sealed class PumpableSyncContext : SynchronizationContext, IDisposable
+        {
+            private readonly System.Collections.Concurrent.ConcurrentQueue<(SendOrPostCallback Callback, object? State)> queue = new();
+            private readonly AutoResetEvent signal = new(false);
+
+            public override void Post(SendOrPostCallback d, object? state)
+            {
+                queue.Enqueue((d, state));
+                try { signal.Set(); } catch (ObjectDisposedException) { }
+            }
+
+            public void PumpUntil(Func<bool> condition, int timeoutMs)
+            {
+                long deadline = Environment.TickCount64 + timeoutMs;
+                while (!condition() && Environment.TickCount64 < deadline)
+                {
+                    while (queue.TryDequeue(out var item))
+                        item.Callback(item.State);
+
+                    if (condition())
+                        break;
+
+                    int remain = (int)Math.Clamp(deadline - Environment.TickCount64, 1, 50);
+                    signal.WaitOne(remain);
+                }
+
+                while (queue.TryDequeue(out var item))
+                    item.Callback(item.State);
+            }
+
+            public void Dispose() => signal.Dispose();
+        }
+
+        [Fact]
+        public async Task CleanupUpdateLeftoversCoreAsync_DeletesFailedImmediatelyAndRetriesLockedOldFile()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"olock_cleanup_retry_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            string fakeExe = Path.Combine(tempDir, "OLock.exe");
+            string oldFile = fakeExe + ".old";
+            string newFile = fakeExe + ".new";
+            string failedFile = fakeExe + ".failed";
+            string stagingDir = Path.Combine(tempDir, ".olock_update_stale");
+            FileStream? oldLock = null;
+            try
+            {
+                Directory.CreateDirectory(stagingDir);
+                await File.WriteAllTextAsync(fakeExe, "current");
+                await File.WriteAllTextAsync(oldFile, "old");
+                await File.WriteAllTextAsync(newFile, "new");
+                await File.WriteAllTextAsync(failedFile, "failed");
+
+                // 模拟旧进程尚未完全释放 .old 句柄
+                oldLock = new FileStream(oldFile, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+                Task retryTask = UpdateService.CleanupUpdateLeftoversCoreAsync(fakeExe, delayedRetryMs: 80);
+
+                // .new / .failed / 临时目录应立即被清理；被锁住的 .old 留待延迟重试任务清理
+                Assert.False(File.Exists(newFile));
+                Assert.False(File.Exists(failedFile));
+                Assert.False(Directory.Exists(stagingDir));
+                Assert.True(File.Exists(oldFile));
+
+                // 释放句柄后等待延迟补清任务结束
+                oldLock.Dispose();
+                oldLock = null;
+
+                await retryTask.WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.False(File.Exists(oldFile));
+            }
+            finally
+            {
+                oldLock?.Dispose();
+                try { Directory.Delete(tempDir, recursive: true); } catch { }
             }
         }
 
