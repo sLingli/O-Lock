@@ -397,37 +397,27 @@ namespace OLock
             }
         }
 
-        // 启动时静默清理上次自更新遗留的 .old / .new 与临时目录
+        // 启动时静默清理上次自更新遗留的 .old / .new / .failed 与临时目录
         internal static void CleanupUpdateLeftovers()
+        {
+            string? exePath = GetCurrentExecutablePath();
+            if (string.IsNullOrEmpty(exePath)) return;
+            _ = CleanupUpdateLeftoversCoreAsync(exePath, delayedRetryMs: 2000);
+        }
+
+        internal static Task CleanupUpdateLeftoversCoreAsync(string exePath, int delayedRetryMs = 2000)
         {
             try
             {
-                string? exePath = GetCurrentExecutablePath();
-                if (string.IsNullOrEmpty(exePath)) return;
-
                 string? exeDir = Path.GetDirectoryName(exePath);
-                if (string.IsNullOrEmpty(exeDir) || !Directory.Exists(exeDir)) return;
+                if (string.IsNullOrEmpty(exeDir) || !Directory.Exists(exeDir))
+                    return Task.CompletedTask;
 
                 string oldFile = exePath + ".old";
                 string failedFile = exePath + ".failed";
                 TryDeleteFile(oldFile);
                 TryDeleteFile(exePath + ".new");
                 TryDeleteFile(failedFile);
-
-                // 快速原地重启时旧进程可能尚未完全释放 .old 句柄，延迟 2 秒再补清一次
-                if (File.Exists(oldFile) || File.Exists(failedFile))
-                {
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            await Task.Delay(2000).ConfigureAwait(false);
-                            TryDeleteFile(oldFile);
-                            TryDeleteFile(failedFile);
-                        }
-                        catch { }
-                    });
-                }
 
                 foreach (string dir in Directory.GetDirectories(exeDir, ".olock_update_*"))
                 {
@@ -444,8 +434,26 @@ namespace OLock
                     }
                     catch { }
                 }
+
+                // 快速原地重启时旧进程可能尚未完全释放 .old / .failed 句柄，延迟补清一次
+                if (File.Exists(oldFile) || File.Exists(failedFile))
+                {
+                    return Task.Run(async () =>
+                    {
+                        try
+                        {
+                            if (delayedRetryMs > 0)
+                                await Task.Delay(delayedRetryMs).ConfigureAwait(false);
+                            TryDeleteFile(oldFile);
+                            TryDeleteFile(failedFile);
+                        }
+                        catch { }
+                    });
+                }
             }
             catch { }
+
+            return Task.CompletedTask;
         }
 
         private static void TryDeleteFile(string path)
@@ -732,8 +740,11 @@ namespace OLock
                     if (!TryRollbackExecutable(currentExePath, oldExePath))
                     {
                         PendingManualRecovery = true;
+                        string backupHint = File.Exists(oldExePath)
+                            ? $"Original backup is preserved at '{oldExePath}'."
+                            : $"Expected backup '{oldExePath}' was missing.";
                         throw new IOException(
-                            $"Updated executable failed to start ({restartEx.Message}) and automatic rollback failed. Original backup is preserved at '{oldExePath}'.",
+                            $"Updated executable failed to start ({restartEx.Message}) and automatic rollback failed. {backupHint}",
                             restartEx);
                     }
                     throw;
@@ -744,12 +755,16 @@ namespace OLock
             ExitForExternalUpdater();
         }
 
+        // 仅在已完成原地替换后调用：若 .old 备份意外缺失，必须返回 false 以防调用方误判为回滚成功
         internal static bool TryRollbackExecutable(string targetExePath, string backupOldPath)
         {
             try
             {
                 if (!File.Exists(backupOldPath))
-                    return true;
+                {
+                    LogError("Update", $"Rollback failed: expected backup '{backupOldPath}' no longer exists");
+                    return false;
+                }
 
                 string failedPath = targetExePath + ".failed";
                 TryDeleteFile(failedPath);

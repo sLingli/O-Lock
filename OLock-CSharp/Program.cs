@@ -470,12 +470,18 @@ namespace OLock
         }
 
         internal static Func<ProcessStartInfo, Process?> processStarter = Process.Start;
-        internal static int updatedProcessStabilityProbeMs = 150;
+        // 400ms 稳定探测窗：覆盖 Full 自包含单文件解包、CLR 初始化与安全软件冷扫导致的早退，同时远低于新进程 10s 等锁上限
+        internal static int updatedProcessStabilityProbeMs = 400;
+        internal static Action exitForUpdateAction = () =>
+        {
+            Application.Exit();
+            ScheduleForcedExitWatchdog();
+        };
 
         internal static void RestartIntoUpdatedExecutable(string exePath)
         {
             LogInfo("Update", $"Restarting into updated executable: {exePath}");
-            // 先拉起新进程（--updated 最多等待 10s 接管单实例锁），短时探测 150ms 排除缺运行时/被杀软强杀导致的瞬时闪退，
+            // 先拉起新进程（--updated 最多等待 10s 接管单实例锁），短时探测 400ms 排除缺运行时/单文件解包失败/被杀软强杀导致的早退，
             // 确认稳定存活后再销毁旧进程托盘与监控，避免新版启动失败时旧进程变成无托盘孤儿
             using var started = processStarter(new ProcessStartInfo
             {
@@ -492,8 +498,7 @@ namespace OLock
 
             ShutdownForExit();
             ReleaseSingleInstanceMutex();
-            Application.Exit();
-            ScheduleForcedExitWatchdog();
+            exitForUpdateAction();
         }
 
         internal static void ExitForExternalUpdater()
@@ -501,8 +506,7 @@ namespace OLock
             LogInfo("Update", "Exiting current process for external update script");
             ShutdownForExit();
             ReleaseSingleInstanceMutex();
-            Application.Exit();
-            ScheduleForcedExitWatchdog();
+            exitForUpdateAction();
         }
 
         internal static bool IsAutostartEnabled()

@@ -99,7 +99,7 @@ namespace OLock
 
             // 允许的 IP 前缀（留空 = 自动匹配所有私网与局域网 IP）
             var tip = new ToolTip();
-            form.FormClosed += (_, _) => tip.Dispose();
+            form.Disposed += (_, _) => tip.Dispose();
             form.Controls.Add(new Label { Text = Tr("settings_allowed_prefixes"), Left = 10, Top = y + 3, Width = labelW });
             var txtAllowed = new TextBox
             {

@@ -278,11 +278,19 @@ namespace OLock
                     break;
 
                 case UpdateCheckStatus.UpdateAvailable:
-                    bool canAutoInstall = !string.IsNullOrWhiteSpace(result.DownloadUrl);
-                    statusLabel.ForeColor = ColorHighlight;
-                    statusLabel.Text = canAutoInstall
-                        ? Tr("update_available", result.LatestVersion, result.AssetName ?? result.PackageVariant)
-                        : Tr("update_available_no_asset", result.LatestVersion);
+                    bool canAutoInstall = !string.IsNullOrWhiteSpace(result.DownloadUrl) && !UpdateService.PendingManualRecovery;
+                    if (UpdateService.PendingManualRecovery)
+                    {
+                        statusLabel.ForeColor = ColorError;
+                        statusLabel.Text = Tr("update_manual_recovery_locked");
+                    }
+                    else
+                    {
+                        statusLabel.ForeColor = ColorHighlight;
+                        statusLabel.Text = canAutoInstall
+                            ? Tr("update_available", result.LatestVersion, result.AssetName ?? result.PackageVariant)
+                            : Tr("update_available_no_asset", result.LatestVersion);
+                    }
                     installButton.Enabled = canAutoInstall;
                     break;
 
@@ -302,10 +310,14 @@ namespace OLock
 
         internal bool InstallButtonEnabledForTest => installButton.Enabled;
         internal bool RecheckOrCancelButtonEnabledForTest => recheckOrCancelButton.Enabled;
+        internal string StatusLabelTextForTest => statusLabel.Text;
+        internal Func<UpdateCheckResult, IProgress<UpdateDownloadProgress>?, CancellationToken, Func<bool>?, Task>? installExecutorForTest;
 
         internal bool TryEnterApplyPhaseForTest() => TryEnterApplyPhaseCore();
         internal void ExitApplyPhaseForTest() => SetApplyingState(false);
         internal void SimulateCancelClickForTest() => OnRecheckOrCancelClicked();
+        internal void RenderCheckResultForTest(UpdateCheckResult result) => RenderCheckResult(result);
+        internal Task RunInstallForTestAsync() => StartDownloadAndInstallAsync();
 
         private void SetApplyingState(bool applying)
         {
@@ -387,7 +399,8 @@ namespace OLock
 
             try
             {
-                await UpdateService.DownloadAndApplyUpdateAsync(currentResult, progress, downloadCts.Token, TryEnterApplyPhaseCore);
+                var executor = installExecutorForTest ?? UpdateService.DownloadAndApplyUpdateAsync;
+                await executor(currentResult, progress, downloadCts.Token, TryEnterApplyPhaseCore);
             }
             catch (OperationCanceledException)
             {
